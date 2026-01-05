@@ -1,9 +1,23 @@
 import re
 
 from bfpp.lexer import preprocess, tokenize
+from bfpp.state import CompilerState
+from bfpp.ops_memory import MemoryOpsMixin
+from bfpp.ops_runtime import RuntimeOpsMixin
+from bfpp.ops_vars import VarsOpsMixin
+from bfpp.ops_arith import ArithOpsMixin
+from bfpp.ops_io import IOMixin
+from bfpp.ops_control import ControlFlowMixin
 
 
-class BrainFuckPlusPlusCompiler:
+class BrainFuckPlusPlusCompiler(
+    VarsOpsMixin,
+    ArithOpsMixin,
+    MemoryOpsMixin,
+    RuntimeOpsMixin,
+    IOMixin,
+    ControlFlowMixin,
+):
     """
     BrainFuck++ Compiler
 
@@ -21,13 +35,63 @@ class BrainFuckPlusPlusCompiler:
     """
 
     def __init__(self, optimize_level=None):
-        self.variables = {}  # name: {'pos': int, 'type': str, 'size': int}
-        self.current_ptr = 0  # Current memory pointer position
-        self.max_ptr = 0  # Maximum memory position used
-        self.temp_cells = []  # Stack for temp cell positions (pos, size)
-        self.bf_code = []  # Generated BrainFuck code
-        self.loop_condition_stack = []  # Stack of condition flags for nested loops
-        self.optimize_level = optimize_level
+        self.state = CompilerState(optimize_level=optimize_level)
+
+    @property
+    def variables(self):
+        return self.state.variables
+
+    @variables.setter
+    def variables(self, value):
+        self.state.variables = value
+
+    @property
+    def current_ptr(self):
+        return self.state.current_ptr
+
+    @current_ptr.setter
+    def current_ptr(self, value):
+        self.state.current_ptr = value
+
+    @property
+    def max_ptr(self):
+        return self.state.max_ptr
+
+    @max_ptr.setter
+    def max_ptr(self, value):
+        self.state.max_ptr = value
+
+    @property
+    def temp_cells(self):
+        return self.state.temp_cells
+
+    @temp_cells.setter
+    def temp_cells(self, value):
+        self.state.temp_cells = value
+
+    @property
+    def bf_code(self):
+        return self.state.bf_code
+
+    @bf_code.setter
+    def bf_code(self, value):
+        self.state.bf_code = value
+
+    @property
+    def loop_condition_stack(self):
+        return self.state.loop_condition_stack
+
+    @loop_condition_stack.setter
+    def loop_condition_stack(self, value):
+        self.state.loop_condition_stack = value
+
+    @property
+    def optimize_level(self):
+        return self.state.optimize_level
+
+    @optimize_level.setter
+    def optimize_level(self, value):
+        self.state.optimize_level = value
 
     # ===== Main Compilation Pipeline =====
 
@@ -111,6 +175,7 @@ class BrainFuckPlusPlusCompiler:
         return out
 
     def _split_var_ref(self, ref):
+        return super()._split_var_ref(ref)
         # Returns (base_name, subscript_or_none)
         # - subscript can be int (array index) or str (dict key)
         m_int = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)\[(\-?\d+)\]$', ref)
@@ -132,6 +197,7 @@ class BrainFuckPlusPlusCompiler:
         return ref, None
 
     def _split_runtime_subscript_ref(self, ref):
+        return super()._split_runtime_subscript_ref(ref)
         # Matches: name[$i]
         m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)\[\$([A-Za-z_][A-Za-z0-9_]*)\]$', ref)
         if not m:
@@ -139,6 +205,7 @@ class BrainFuckPlusPlusCompiler:
         return m.group(1), m.group(2)
 
     def _resolve_var(self, ref):
+        return super()._resolve_var(ref)
         # Resolve scalar var or array element ref into a concrete (pos,type,size).
         if ref.startswith('$'):
             ref = ref[1:]
@@ -200,9 +267,11 @@ class BrainFuckPlusPlusCompiler:
         raise ValueError(f"Variable '{base}' does not support subscript access")
 
     def _collection_element_ref(self, base_name, index):
+        return super()._collection_element_ref(base_name, index)
         return f"{base_name}[{index}]"
 
     def _set_collection_numeric_literal(self, value, dest_info):
+        return super()._set_collection_numeric_literal(value, dest_info)
         # Set all elements in an array/dict to the same numeric value.
         base = dest_info['base']
         length = dest_info.get('length', 1)
@@ -222,6 +291,7 @@ class BrainFuckPlusPlusCompiler:
                 self._generate_set_value(int(value), pos=pos)
 
     def _set_string_value_at_pos(self, string_token, pos, max_size):
+        return super()._set_string_value_at_pos(string_token, pos, max_size)
         string_val = string_token.strip('"')
         if max_size <= len(string_val):
             raise ValueError("String too large for destination")
@@ -230,6 +300,7 @@ class BrainFuckPlusPlusCompiler:
         self._generate_set_value(0, pos=pos + len(string_val))
 
     def _set_collection_string_literal(self, string_token, dest_info):
+        return super()._set_collection_string_literal(string_token, dest_info)
         if dest_info['type'] != 'string':
             raise ValueError("String fill requires string collection")
         length = dest_info.get('length', 1)
@@ -238,121 +309,10 @@ class BrainFuckPlusPlusCompiler:
             self._set_string_value_at_pos(string_token, dest_info['pos'] + idx * elem_size, elem_size)
 
     def _output_literal(self, token):
-        # Output a literal token (string or numeric byte) to stdout.
-        temp = self._allocate_temp()
-        if token.startswith('"') and token.endswith('"'):
-            s = token[1:-1]
-            for ch in s:
-                self._generate_set_value(ord(ch), temp)
-                self.bf_code.append('.')
-                self._generate_clear(temp)
-        else:
-            self._generate_set_value(int(token), temp)
-            self.bf_code.append('.')
-            self._generate_clear(temp)
-        self._free_temp(temp)
+        return super()._output_literal(token)
 
     def _output_string_until_null_deterministic(self, pos, size):
-        # Deterministic pointer-safe string output (max length = size-1)
-        stop = self._allocate_temp()
-        gate = self._allocate_temp()
-        char_tmp = self._allocate_temp()
-        scratch = self._allocate_temp()
-        is_zero = self._allocate_temp()
-
-        self._generate_set_value(1, stop)
-
-        for i in range(size):
-            # gate = stop
-            gate_scratch = self._allocate_temp()
-            self._copy_cell(stop, gate, gate_scratch)
-            self._free_temp(gate_scratch)
-
-            self._move_pointer(gate)
-            self.bf_code.append('[')
-            # char_tmp = s[i]
-            self._copy_cell(pos + i, char_tmp, scratch)
-
-            self._generate_set_value(1, is_zero)
-            self._move_pointer(char_tmp)
-            self.bf_code.append('[')
-            # non-zero: clear is_zero, output char, clear char_tmp
-            self._generate_clear(is_zero)
-            self._move_pointer(pos + i)
-            self.bf_code.append('.')
-            self._generate_clear(char_tmp)
-            self.bf_code.append(']')
-
-            # if is_zero still 1 => stop = 0
-            self._move_pointer(is_zero)
-            self.bf_code.append('[')
-            self._generate_clear(stop)
-            self._generate_clear(is_zero)
-            self.bf_code.append(']')
-
-            # clear gate to exit
-            self._generate_clear(gate)
-            self.bf_code.append(']')
-
-        self._free_temp(is_zero)
-        self._free_temp(scratch)
-        self._free_temp(char_tmp)
-        self._free_temp(gate)
-        self._free_temp(stop)
-
-    def _generate_if_byte_equals(self, byte_pos, const_value, body_fn):
-        # Executes body_fn() if *byte_pos == const_value (0..255). Does not consume byte.
-        temp_a = self._allocate_temp()
-        temp_b = self._allocate_temp()
-        temp_scratch = self._allocate_temp()
-        is_equal = self._allocate_temp()
-
-        self._copy_cell(byte_pos, temp_a, temp_scratch)
-        self._generate_set_value(const_value, temp_b)
-
-        self._move_pointer(temp_b)
-        self.bf_code.append('[')
-        self._move_pointer(temp_a)
-        self.bf_code.append('-')
-        self._move_pointer(temp_b)
-        self.bf_code.append('-]')
-
-        self._generate_set_value(1, is_equal)
-        self._move_pointer(temp_a)
-        self.bf_code.append('[')
-        self._generate_clear(is_equal)
-        self._generate_clear(temp_a)
-        self.bf_code.append(']')
-
-        self._move_pointer(is_equal)
-        self.bf_code.append('[')
-        body_fn()
-        self._move_pointer(is_equal)
-        self.bf_code.append('-]')
-
-        self._free_temp(is_equal)
-        self._free_temp(temp_scratch)
-        self._free_temp(temp_b)
-        self._free_temp(temp_a)
-
-    def _apply_runtime_subscript_op(self, base_info, index_var_name, per_slot_fn):
-        if index_var_name not in self.variables:
-            raise ValueError(f"Unknown index variable: {index_var_name}")
-        idx_info = self.variables[index_var_name]
-        if idx_info['size'] != 1:
-            raise NotImplementedError("Runtime subscripts require a 1-byte index variable")
-
-        idx_pos = idx_info['pos']
-        length = base_info.get('length', 1)
-        elem_size = base_info.get('elem_size', 1)
-        base_pos = base_info['pos']
-
-        for slot in range(length):
-            def _body(slot=slot):
-                per_slot_fn(base_pos + slot * elem_size, slot)
-            self._generate_if_byte_equals(idx_pos, slot, _body)
-
-        self._move_pointer(idx_pos)
+        return super()._output_string_until_null_deterministic(pos, size)
 
     def _process_lines_range(self, lines, start_idx, end_idx):
         i = start_idx
@@ -403,7 +363,10 @@ class BrainFuckPlusPlusCompiler:
         elif cmd == 'output':
             self.bf_code.append('.')
         elif cmd == 'input':
-            self.bf_code.append(',')
+            if len(tokens) > 2 and tokens[1] == 'on':
+                self._handle_input(tokens[2:])
+            else:
+                self.bf_code.append(',')
         elif cmd == 'print' and len(tokens) > 1 and tokens[1] == 'string':
             self._handle_print_string(tokens[2:])
         elif cmd == 'varout':
@@ -418,6 +381,8 @@ class BrainFuckPlusPlusCompiler:
             return self._handle_while_loop(tokens[1:], lines, line_idx)
         elif cmd == 'if':
             return self._handle_if_statement(tokens[1:], lines, line_idx)
+        elif cmd == 'match':
+            return self._handle_match_statement(tokens[1:], lines, line_idx)
         elif cmd == 'for':
             return self._handle_for_loop(tokens[1:], lines, line_idx)
         elif cmd == 'break':
@@ -425,125 +390,11 @@ class BrainFuckPlusPlusCompiler:
 
         return line_idx
 
-    # ===== Memory Management =====
-
-    def _allocate_temp(self, size=1):
-        """
-        Allocate temporary memory cells.
-
-        BF Code Generation:
-        - No code generated, just bookkeeping
-        - Temps are allocated from the end of used memory
-        - Must be freed in LIFO order
-        """
-        pos = self.max_ptr
-        self.max_ptr += size
-        self.temp_cells.append((pos, size))
-        return pos
-
-    def _free_temp(self, pos):
-        """
-        Free temporary memory cells.
-
-        Enforces stack discipline - must free in reverse allocation order.
-        """
-        if not self.temp_cells:
-            raise ValueError("Compiler Error: No temporary cells to free.")
-        last_pos, size = self.temp_cells.pop()
-        if pos != last_pos:
-            raise ValueError(f"Compiler Error: Invalid temp cell free order. Expected {last_pos}, got {pos}.")
-        self.max_ptr -= size
-
-    def _move_pointer(self, target_pos):
-        """
-        Generate BF code to move memory pointer.
-
-        BF Code Generation:
-        - Use > to move right
-        - Use < to move left
-        - Optimize by calculating the difference
-        """
-        diff = target_pos - self.current_ptr
-        if diff > 0:
-            self.bf_code.append('>' * diff)
-        elif diff < 0:
-            self.bf_code.append('<' * (-diff))
-        self.current_ptr = target_pos
-
     def _move_to_var(self, var_name):
         """Move pointer to the start of a variable's memory location."""
+        return super()._move_to_var(var_name)
         var_info = self._resolve_var(var_name)
         self._move_pointer(var_info['pos'])
-
-    # ===== Basic BF Operations =====
-
-    def _generate_clear(self, pos=None):
-        """
-        Generate BF code to set current cell to zero.
-
-        BF Code Pattern: [-]
-        - Loop that decrements until zero
-        """
-        if pos is not None:
-            self._move_pointer(pos)
-        self.bf_code.append('[-]')
-
-    def _generate_set_value(self, value, pos=None):
-        """
-        Generate BF code to set cell to specific value.
-
-        BF Code Pattern:
-        1. Clear cell: [-]
-        2. Add value: ++++... (value times)
-        """
-        if pos is not None:
-            self._move_pointer(pos)
-        self._generate_clear()
-        value = int(value)
-        if value > 0:
-            self.bf_code.append('+' * value)
-
-    def _copy_cell(self, src_pos, dest_pos, temp_pos):
-        """
-        Generate BF code for non-destructive cell copy.
-
-        BF Code Pattern:
-        1. Clear destination
-        2. Loop on source: [->+>+<<]  (copy to dest and temp)
-        3. Restore source from temp: >>[-<<+>>]
-
-        Algorithm:
-        - Move source value to both destination and temp
-        - Restore source from temp
-        """
-        # Clear destination
-        self._move_pointer(dest_pos)
-        self._generate_clear()
-
-        # Copy loop
-        self._move_pointer(src_pos)
-        self.bf_code.append('[')
-        self._move_pointer(dest_pos)
-        self.bf_code.append('+')
-        self._move_pointer(temp_pos)
-        self.bf_code.append('+')
-        self._move_pointer(src_pos)
-        self.bf_code.append('-]')
-
-        # Restore source
-        self._move_pointer(temp_pos)
-        self.bf_code.append('[')
-        self._move_pointer(src_pos)
-        self.bf_code.append('+')
-        self._move_pointer(temp_pos)
-        self.bf_code.append('-]')
-
-    def _copy_block(self, src_pos, dest_pos, size):
-        """Copy a block of memory non-destructively."""
-        temp_block = self._allocate_temp(size)
-        for i in range(size):
-            self._copy_cell(src_pos + i, dest_pos + i, temp_block + i)
-        self._free_temp(temp_block)
 
     # ===== Variable Operations =====
 
@@ -558,6 +409,7 @@ class BrainFuckPlusPlusCompiler:
         - Allocate memory space
         - Initialize to zero
         """
+        return super()._handle_declare(tokens)
         if len(tokens) < 2:
             raise ValueError("`declare` requires <type> <name>")
 
@@ -714,6 +566,7 @@ class BrainFuckPlusPlusCompiler:
         Syntax: set <value> on <var>
         Supports: literals, strings, variables ($var), expressions
         """
+        return super()._handle_set(tokens)
         if 'on' not in tokens:
             raise ValueError("`set` requires `on <var>` clause")
 
@@ -786,6 +639,7 @@ class BrainFuckPlusPlusCompiler:
 
     def _set_string_literal(self, string_token, dest_var):
         """Set a string literal value to a string variable."""
+        return super()._set_string_literal(string_token, dest_var)
         string_val = string_token.strip('"')
         var_info = self._resolve_var(dest_var)
 
@@ -803,6 +657,7 @@ class BrainFuckPlusPlusCompiler:
 
     def _set_numeric_literal(self, value, dest_var):
         """Set a numeric literal to a variable."""
+        return super()._set_numeric_literal(value, dest_var)
         var_info = self._resolve_var(dest_var)
 
         if var_info['type'] == 'int':
@@ -822,6 +677,7 @@ class BrainFuckPlusPlusCompiler:
         - For bytes: single + or -
         - For ints: increment LSB only (simplified)
         """
+        return super()._handle_inc_dec(operation, tokens)
         var_name = None
         if len(tokens) > 1 and tokens[0] == 'on':
             var_name = tokens[1]
@@ -833,16 +689,31 @@ class BrainFuckPlusPlusCompiler:
                     raise ValueError("Runtime subscript target must be array or dict")
 
                 def _slot_incdec(pos, slot):
-                    self._move_pointer(pos)
-                    if operation == 'inc':
-                        self.bf_code.append('+')
+                    if base_info['type'] == 'int':
+                        if operation == 'inc':
+                            self._increment_multi_byte(pos)
+                        else:
+                            self._decrement_multi_byte(pos)
                     else:
-                        self.bf_code.append('-')
+                        self._move_pointer(pos)
+                        if operation == 'inc':
+                            self.bf_code.append('+')
+                        else:
+                            self.bf_code.append('-')
 
                 self._apply_runtime_subscript_op(base_info, idx_var, _slot_incdec)
                 return
 
             self._move_to_var(var_name)
+
+        if var_name is not None:
+            var_info = self._resolve_var(var_name)
+            if var_info['type'] == 'int':
+                if operation == 'inc':
+                    self._increment_multi_byte(var_info['pos'])
+                else:
+                    self._decrement_multi_byte(var_info['pos'])
+                return
 
         if operation == 'inc':
             self.bf_code.append('+')
@@ -853,6 +724,7 @@ class BrainFuckPlusPlusCompiler:
 
     def _handle_expression_assignment(self, expr_tokens, dest_var):
         """Handle arithmetic and bitwise expression assignment."""
+        return super()._handle_expression_assignment(expr_tokens, dest_var)
         dest_info = self._resolve_var(dest_var)
 
         if dest_info['type'] != 'int':
@@ -906,6 +778,7 @@ class BrainFuckPlusPlusCompiler:
 
     def _parse_expression(self, tokens):
         """Parse expression tokens into operands and operator."""
+        return super()._parse_expression(tokens)
         if len(tokens) >= 2 and tokens[0] == '~':
             return tokens[1], '~', None
         elif len(tokens) == 3:
@@ -917,29 +790,44 @@ class BrainFuckPlusPlusCompiler:
 
     def _load_operand(self, operand, target_pos):
         """Load a variable or literal into memory position."""
+        return super()._load_operand(operand, target_pos)
+        op = operand[1:] if operand.startswith('$') else operand
+        runtime = self._split_runtime_subscript_ref(op)
+        if runtime is not None:
+            base_name, idx_var = runtime
+            base_info = self._resolve_var(base_name)
+            if base_info['type'] != 'int' or base_info.get('elem_size', 8) != 8:
+                raise NotImplementedError("Runtime-subscripted expression operands currently support only int elements")
+            self._load_runtime_subscript_into_buffer(base_info, idx_var, target_pos, 8)
+            return
+
         if operand.startswith('$'):
             var_info = self._resolve_var(operand)
             if var_info['type'] != 'int' or var_info['size'] != 8:
                 raise NotImplementedError("Expression operands currently support only 8-byte int variables")
             self._copy_block(var_info['pos'], target_pos, 8)
-        else:
-            value = int(operand)
-            byte_values = value.to_bytes(8, 'little', signed=True)
-            for i, byte_val in enumerate(byte_values):
-                self._generate_set_value(byte_val, pos=target_pos + i)
+            return
+
+        value = int(operand)
+        byte_values = value.to_bytes(8, 'little', signed=True)
+        for i, byte_val in enumerate(byte_values):
+            self._generate_set_value(byte_val, pos=target_pos + i)
 
     def _perform_bitwise_and(self, pos_a, pos_b, pos_result):
         """Perform bytewise AND on two 8-byte integers."""
+        return super()._perform_bitwise_and(pos_a, pos_b, pos_result)
         for i in range(8):
             self._bitwise_byte_operation('and', pos_a + i, pos_b + i, pos_result + i)
 
     def _perform_bitwise_or(self, pos_a, pos_b, pos_result):
         """Perform bytewise OR on two 8-byte integers."""
+        return super()._perform_bitwise_or(pos_a, pos_b, pos_result)
         for i in range(8):
             self._bitwise_byte_operation('or', pos_a + i, pos_b + i, pos_result + i)
 
     def _perform_bitwise_xor(self, pos_a, pos_b, pos_result):
         """Perform bytewise XOR on two 8-byte integers."""
+        return super()._perform_bitwise_xor(pos_a, pos_b, pos_result)
         for i in range(8):
             self._bitwise_byte_operation('xor', pos_a + i, pos_b + i, pos_result + i)
 
@@ -951,6 +839,7 @@ class BrainFuckPlusPlusCompiler:
         - Set result to 255
         - Subtract input value
         """
+        return super()._perform_bitwise_not(pos_in, pos_result)
         temp_in = self._allocate_temp(8)
         self._copy_block(pos_in, temp_in, 8)
 
@@ -968,6 +857,7 @@ class BrainFuckPlusPlusCompiler:
 
     def _perform_add(self, pos_a, pos_b, pos_result):
         """Perform addition on two 8-byte integers."""
+        return super()._perform_add(pos_a, pos_b, pos_result)
         carry_flag = self._allocate_temp()
         
         # Clear result
@@ -1009,6 +899,7 @@ class BrainFuckPlusPlusCompiler:
 
     def _perform_sub(self, pos_a, pos_b, pos_result):
         """Perform subtraction (a - b) on two 8-byte integers."""
+        return super()._perform_sub(pos_a, pos_b, pos_result)
         borrow_flag = self._allocate_temp()
         
         # Copy A to result
@@ -1043,6 +934,7 @@ class BrainFuckPlusPlusCompiler:
 
     def _perform_mul(self, pos_a, pos_b, pos_result):
         """Perform multiplication using repeated addition (simplified)."""
+        return super()._perform_mul(pos_a, pos_b, pos_result)
         temp_result = self._allocate_temp(8)
         temp_counter = self._allocate_temp(8)
         
@@ -1082,6 +974,7 @@ class BrainFuckPlusPlusCompiler:
 
     def _perform_div(self, pos_a, pos_b, pos_result):
         """Perform integer division using repeated subtraction."""
+        return super()._perform_div(pos_a, pos_b, pos_result)
         quotient = self._allocate_temp(8)
         remainder = self._allocate_temp(8)
         temp_b = self._allocate_temp(8)
@@ -1128,6 +1021,7 @@ class BrainFuckPlusPlusCompiler:
 
     def _perform_mod(self, pos_a, pos_b, pos_result):
         """Perform modulo operation using repeated subtraction."""
+        return super()._perform_mod(pos_a, pos_b, pos_result)
         remainder = self._allocate_temp(8)
         temp_b = self._allocate_temp(8)
         
@@ -1176,6 +1070,7 @@ class BrainFuckPlusPlusCompiler:
 
         Algorithm: Decompose both numbers by repeatedly extracting highest bit.
         """
+        return super()._bitwise_byte_operation(op, pos_a, pos_b, pos_result)
         # Clear result
         self._generate_clear(pos_result)
 
@@ -1347,6 +1242,9 @@ class BrainFuckPlusPlusCompiler:
 
     # ===== Control Flow =====
 
+    def _handle_match_statement(self, tokens, lines, line_idx):
+        return super()._handle_match_statement(tokens, lines, line_idx)
+
     def _handle_if_statement(self, tokens, lines, line_idx):
         """
         Handle if/else statements.
@@ -1356,6 +1254,7 @@ class BrainFuckPlusPlusCompiler:
         2. If flag set: execute if-block, clear else-flag
         3. If else-flag set: execute else-block
         """
+        return super()._handle_if_statement(tokens, lines, line_idx)
         if 'then' in tokens:
             then_idx = tokens.index('then')
             cond_tokens = self._extract_parentheses_content(tokens[:then_idx])
@@ -1459,6 +1358,7 @@ class BrainFuckPlusPlusCompiler:
         1. Evaluate condition
         2. Loop: [execute body, if flag still set re-evaluate condition]
         """
+        return super()._handle_while_loop(tokens, lines, line_idx)
         if 'do' in tokens:
             do_idx = tokens.index('do')
             cond_tokens = self._extract_parentheses_content(tokens[:do_idx])
@@ -1564,6 +1464,7 @@ class BrainFuckPlusPlusCompiler:
         Desugars: for (init; cond; step) {...}
         Into: init; while (cond) {...; step}
         """
+        return super()._handle_for_loop(tokens, lines, line_idx)
         paren_tokens = self._extract_parentheses_content(tokens)
 
         # Find semicolons to split the three parts
@@ -1610,6 +1511,7 @@ class BrainFuckPlusPlusCompiler:
 
         Clears the current loop's condition flag to exit.
         """
+        return super()._handle_break()
         if not self.loop_condition_stack:
             raise RuntimeError("Break used outside of loop")
 
@@ -1625,6 +1527,7 @@ class BrainFuckPlusPlusCompiler:
         - Comparisons (==, !=)
         - Negation (!)
         """
+        return super()._evaluate_condition(tokens, flag_pos)
         self._generate_clear(flag_pos)
 
         if not tokens:
@@ -1638,11 +1541,24 @@ class BrainFuckPlusPlusCompiler:
 
         # Variable truthiness
         var_info = None
+        temp_buf = None
         if len(tokens) == 1:
-            try:
-                var_info = self._resolve_var(tokens[0])
-            except Exception:
-                var_info = None
+            tok = tokens[0]
+            rt = self._split_runtime_subscript_ref(tok[1:] if tok.startswith('$') else tok)
+            if rt is not None:
+                base_name, idx_var = rt
+                base_info = self._resolve_var(base_name)
+                if not (base_info.get('is_array') or base_info.get('is_dict')):
+                    raise ValueError("Runtime subscript target must be array or dict")
+                elem_size = base_info.get('elem_size', 1)
+                temp_buf = self._allocate_temp(elem_size)
+                self._load_runtime_subscript_into_buffer(base_info, idx_var, temp_buf, elem_size)
+                var_info = {'pos': temp_buf, 'size': elem_size}
+            else:
+                try:
+                    var_info = self._resolve_var(tok)
+                except Exception:
+                    var_info = None
 
         if len(tokens) == 1 and var_info is not None:
             temp_scratch = self._allocate_temp()
@@ -1670,6 +1586,9 @@ class BrainFuckPlusPlusCompiler:
             self._free_temp(temp_copy)
             self._free_temp(temp_scratch)
 
+            if temp_buf is not None:
+                self._free_temp(temp_buf)
+
         # Comparison
         elif len(tokens) in (3, 4):
             left_ref = tokens[0]
@@ -1690,17 +1609,29 @@ class BrainFuckPlusPlusCompiler:
                     raise ValueError(f"Invalid condition: {' '.join(tokens)}")
                 value = -int(tokens[3])
 
-            left_info = self._resolve_var(left_ref)
-            if left_info['type'] != 'int' or left_info['size'] != 8:
-                raise NotImplementedError("Comparisons currently supported only for 8-byte 'int' values")
+            temps_to_free = []
 
-            var_pos = left_info['pos']
+            def _resolve_int_operand(ref):
+                r = ref[1:] if ref.startswith('$') else ref
+                rt = self._split_runtime_subscript_ref(r)
+                if rt is not None:
+                    base_name, idx_var = rt
+                    base_info = self._resolve_var(base_name)
+                    if base_info['type'] != 'int' or base_info.get('elem_size', 8) != 8:
+                        raise NotImplementedError("Runtime-subscript comparisons support only int elements")
+                    tmp = self._allocate_temp(8)
+                    temps_to_free.append(tmp)
+                    self._load_runtime_subscript_into_buffer(base_info, idx_var, tmp, 8)
+                    return tmp
+                info = self._resolve_var(ref)
+                if info['type'] != 'int' or info['size'] != 8:
+                    raise NotImplementedError("Comparisons currently supported only for 8-byte 'int' values")
+                return info['pos']
+
+            var_pos = _resolve_int_operand(left_ref)
 
             if rhs_is_var:
-                right_info = self._resolve_var(rhs_ref)
-                if right_info['type'] != 'int' or right_info['size'] != 8:
-                    raise NotImplementedError("Comparisons currently supported only for 8-byte 'int' values")
-                rhs_pos = right_info['pos']
+                rhs_pos = _resolve_int_operand(rhs_ref)
 
             if op in ('==', '!=', '<', '>', '<=', '>='):
                 temp_a = self._allocate_temp(8)
@@ -1846,6 +1777,9 @@ class BrainFuckPlusPlusCompiler:
             else:
                 raise NotImplementedError(f"Operator '{op}' not implemented")
 
+            for p in reversed(temps_to_free):
+                self._free_temp(p)
+
         # Apply negation if needed
         if negate:
             temp = self._allocate_temp()
@@ -1861,8 +1795,110 @@ class BrainFuckPlusPlusCompiler:
             self._move_pointer(flag_pos)
             self._free_temp(temp)
 
+    def _generate_if_nonzero(self, pos, body_fn):
+        # Executes body_fn() if *pos != 0 (non-destructive).
+        tmp = self._allocate_temp()
+        scratch = self._allocate_temp()
+        self._generate_clear(scratch)
+        self._copy_cell(pos, tmp, scratch)
+        self._move_pointer(tmp)
+        self.bf_code.append('[')
+        body_fn()
+        self._generate_clear(tmp)
+        self.bf_code.append(']')
+        self._free_temp(scratch)
+        self._free_temp(tmp)
+
+    def _load_runtime_subscript_into_buffer(self, base_info, idx_var, target_pos, size):
+        # Clears target buffer then copies the selected element into it.
+        for i in range(size):
+            self._generate_clear(target_pos + i)
+
+        def _slot_copy(pos, slot):
+            self._copy_block(pos, target_pos, size)
+
+        self._apply_runtime_subscript_op(base_info, idx_var, _slot_copy)
+
+    def _input_string_at_pos(self, pos, size):
+        return super()._input_string_at_pos(pos, size)
+        # Read up to size-1 chars, stop at newline (10) or EOF (0). Ensure null terminator.
+        stop = self._allocate_temp()
+        self._generate_set_value(1, stop)
+
+        for i in range(size - 1):
+            def _read_char(i=i):
+                self._move_pointer(pos + i)
+                self.bf_code.append(',')
+
+                def _nl_body():
+                    self._generate_clear(pos + i)
+                    self._generate_clear(stop)
+
+                self._generate_if_byte_equals(pos + i, 10, _nl_body)
+
+                def _eof_body():
+                    self._generate_clear(pos + i)
+                    self._generate_clear(stop)
+
+                self._generate_if_byte_equals(pos + i, 0, _eof_body)
+
+            self._generate_if_nonzero(stop, _read_char)
+
+        self._generate_clear(pos + size - 1)
+        self._free_temp(stop)
+
+    def _handle_input(self, tokens):
+        return super()._handle_input(tokens)
+        if not tokens:
+            raise ValueError("input on requires a variable reference")
+
+        var_ref = tokens[0]
+        runtime = self._split_runtime_subscript_ref(var_ref)
+        if runtime is not None:
+            base_name, idx_var = runtime
+            base_info = self._resolve_var(base_name)
+            if not (base_info.get('is_array') or base_info.get('is_dict')):
+                raise ValueError("Runtime subscript target must be array or dict")
+
+            def _slot_in(pos, slot):
+                if base_info['type'] in ('byte', 'char'):
+                    self._move_pointer(pos)
+                    self.bf_code.append(',')
+                elif base_info['type'] == 'int':
+                    for j in range(8):
+                        self._generate_clear(pos + j)
+                    self._move_pointer(pos)
+                    self.bf_code.append(',')
+                elif base_info['type'] == 'string':
+                    self._input_string_at_pos(pos, base_info['elem_size'])
+                else:
+                    raise NotImplementedError(f"input on not implemented for runtime collection type {base_info['type']}")
+
+            self._apply_runtime_subscript_op(base_info, idx_var, _slot_in)
+            return
+
+        var_info = self._resolve_var(var_ref)
+        if var_info['type'] in ('byte', 'char'):
+            self._move_pointer(var_info['pos'])
+            self.bf_code.append(',')
+            return
+
+        if var_info['type'] == 'int':
+            for i in range(8):
+                self._generate_clear(var_info['pos'] + i)
+            self._move_pointer(var_info['pos'])
+            self.bf_code.append(',')
+            return
+
+        if var_info['type'] == 'string':
+            self._input_string_at_pos(var_info['pos'], var_info['size'])
+            return
+
+        raise NotImplementedError(f"input on not implemented for type {var_info['type']}")
+
     def _process_block(self, lines, start_idx):
         """Process a code block enclosed in braces."""
+        return super()._process_block(lines, start_idx)
         i = start_idx
 
         # Skip opening brace if on separate line
@@ -1892,6 +1928,7 @@ class BrainFuckPlusPlusCompiler:
 
     def _handle_move_to(self, tokens):
         """Handle 'move to <var>' command."""
+        return super()._handle_move_to(tokens)
         if tokens:
             self._move_to_var(tokens[0])
 
@@ -1902,6 +1939,7 @@ class BrainFuckPlusPlusCompiler:
         BF Code Generation:
         - For each character: set value, output, clear
         """
+        return super()._handle_print_string(tokens)
         if tokens and tokens[0].startswith('"'):
             string_val = tokens[0].strip('"')
             temp = self._allocate_temp()
@@ -1922,6 +1960,7 @@ class BrainFuckPlusPlusCompiler:
         - For strings: output until null terminator
         - For bytes: output as character
         """
+        return super()._handle_varout(tokens)
         if not tokens:
             raise ValueError("varout requires variable name")
         
@@ -2027,56 +2066,166 @@ class BrainFuckPlusPlusCompiler:
             raise NotImplementedError(f"varout not implemented for type {var_info['type']}")
 
     def _output_int_as_decimal(self, pos):
-        """
-        Output 8-byte integer as decimal string.
-        This is a simplified implementation that works for small positive numbers.
-        """
-        temp = self._allocate_temp(8)
-        digit_temp = self._allocate_temp()
-        
-        # Check if number is negative (most significant byte > 127)
-        msb_pos = pos + 7
-        is_negative = self._allocate_temp()
-        
-        self._generate_set_value(128, digit_temp)
-        temp_copy = self._allocate_temp()
-        self._copy_cell(msb_pos, is_negative, temp_copy)
-        self._free_temp(temp_copy)
-        
-        # Check if MSB >= 128
-        self._move_pointer(digit_temp)
+        return super()._output_int_as_decimal(pos)
+        # Deterministic small-int output for debugging:
+        # - Sign is determined by MSB (byte 7) only.
+        # - Magnitude is derived from the low byte only.
+        # This intentionally ignores high bytes, because many arithmetic routines
+        # in this compiler are simplified and may not maintain a strict 8-byte
+        # canonical representation.
+
+        msb = pos + 7
+        is_neg = self._allocate_temp()
+        self._generate_clear(is_neg)
+        self._generate_if_byte_equals(msb, 255, lambda: self._generate_set_value(1, is_neg))
+
+        # Work byte (magnitude)
+        mag = self._allocate_temp()
+        scratch = self._allocate_temp()
+        self._generate_clear(scratch)
+        self._generate_clear(mag)
+
+        def _set_mag_positive():
+            self._copy_cell(pos, mag, scratch)
+
+        def _set_mag_negative_and_print_sign():
+            self._output_literal('"-"')
+            tmp = self._allocate_temp()
+            self._copy_cell(pos, tmp, scratch)
+            # mag = 0 - tmp  (mod 256) => 256 - tmp
+            self._move_pointer(tmp)
+            self.bf_code.append('[')
+            self._move_pointer(mag)
+            self.bf_code.append('-')
+            self._move_pointer(tmp)
+            self.bf_code.append('-]')
+            self._free_temp(tmp)
+
+        self._set_mag_positive = _set_mag_positive
+        self._generate_if_nonzero(is_neg, _set_mag_negative_and_print_sign)
+
+        inv_neg = self._allocate_temp()
+        self._generate_set_value(1, inv_neg)
+        self._move_pointer(is_neg)
         self.bf_code.append('[')
-        self._move_pointer(is_negative)
+        self._move_pointer(inv_neg)
         self.bf_code.append('-')
-        self._move_pointer(digit_temp)
+        self._move_pointer(is_neg)
         self.bf_code.append('-]')
-        
-        # If is_negative is still > 0, number is negative
-        self._move_pointer(is_negative)
+        self._move_pointer(inv_neg)
         self.bf_code.append('[')
-        # Output minus sign
-        self.bf_code.append('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++.[-]')
+        _set_mag_positive()
+        self._generate_clear(inv_neg)
         self.bf_code.append(']')
-        
-        # For simplicity, just handle small positive numbers for now
-        # Copy the number to temp
-        self._copy_block(pos, temp, 8)
-        
-        # Output digits (simplified - only works for numbers < 10)
-        self._move_pointer(temp)
+        self._free_temp(inv_neg)
+
+        # Convert magnitude (0..255) to decimal digits using rollover counting.
+        counter = self._allocate_temp()
+        self._generate_clear(scratch)
+        self._copy_cell(mag, counter, scratch)
+
+        ones = self._allocate_temp()
+        tens = self._allocate_temp()
+        hundreds = self._allocate_temp()
+        self._generate_clear(ones)
+        self._generate_clear(tens)
+        self._generate_clear(hundreds)
+
+        self._move_pointer(counter)
         self.bf_code.append('[')
-        self.bf_code.append('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++.[-]')
+        self.bf_code.append('-')
+
+        self._move_pointer(ones)
+        self.bf_code.append('+')
+
+        def _roll_tens():
+            self._generate_clear(tens)
+            self._move_pointer(hundreds)
+            self.bf_code.append('+')
+
+        def _roll_ones():
+            self._generate_clear(ones)
+            self._move_pointer(tens)
+            self.bf_code.append('+')
+            self._generate_if_byte_equals(tens, 10, _roll_tens)
+
+        self._generate_if_byte_equals(ones, 10, _roll_ones)
+
+        self._move_pointer(counter)
         self.bf_code.append(']')
-        
-        # Free temps in reverse order
-        self._free_temp(is_negative)
-        self._free_temp(digit_temp)
-        self._free_temp(temp)
+
+        out = self._allocate_temp()
+        tmp = self._allocate_temp()
+
+        def _emit_digit(dpos):
+            self._generate_set_value(48, out)
+            scr2 = self._allocate_temp()
+            self._generate_clear(scr2)
+            self._copy_cell(dpos, tmp, scr2)
+            self._move_pointer(tmp)
+            self.bf_code.append('[')
+            self._move_pointer(out)
+            self.bf_code.append('+')
+            self._move_pointer(tmp)
+            self.bf_code.append('-]')
+            self._move_pointer(out)
+            self.bf_code.append('.')
+            self._generate_clear(out)
+            self._free_temp(scr2)
+
+        started = self._allocate_temp()
+        self._generate_clear(started)
+
+        def _start_and_emit_hundreds():
+            _emit_digit(hundreds)
+            self._generate_set_value(1, started)
+
+        def _start_and_emit_tens():
+            _emit_digit(tens)
+            self._generate_set_value(1, started)
+
+        self._generate_if_nonzero(hundreds, _start_and_emit_hundreds)
+
+        def _emit_tens_when_started():
+            _emit_digit(tens)
+
+        # If started already, always emit tens (including 0)
+        self._generate_if_nonzero(started, _emit_tens_when_started)
+        # If not started, only emit tens if non-zero
+        inv_started = self._allocate_temp()
+        self._generate_set_value(1, inv_started)
+        self._move_pointer(started)
+        self.bf_code.append('[')
+        self._move_pointer(inv_started)
+        self.bf_code.append('-')
+        self._move_pointer(started)
+        self.bf_code.append('-]')
+        self._move_pointer(inv_started)
+        self.bf_code.append('[')
+        self._generate_if_nonzero(tens, _start_and_emit_tens)
+        self._generate_clear(inv_started)
+        self.bf_code.append(']')
+        self._free_temp(inv_started)
+
+        # Ones: emit if started, else emit (0..9) normally (prints 0 when value is 0)
+        _emit_digit(ones)
+
+        self._free_temp(started)
+        self._free_temp(tmp)
+        self._free_temp(out)
+        self._free_temp(hundreds)
+        self._free_temp(tens)
+        self._free_temp(ones)
+        self._free_temp(counter)
+        self._free_temp(scratch)
+        self._free_temp(mag)
+        self._free_temp(is_neg)
 
     # ===== Helper Methods =====
 
     def _extract_parentheses_content(self, tokens):
         """Extract tokens between matching parentheses."""
+        return super()._extract_parentheses_content(tokens)
         if '(' not in tokens:
             return tokens
 
@@ -2100,37 +2249,87 @@ class BrainFuckPlusPlusCompiler:
 
     def _increment_multi_byte(self, pos):
         """Increment 8-byte integer with carry propagation."""
+        return super()._increment_multi_byte(pos)
         carry_flag = self._allocate_temp(1)
         self._generate_set_value(1, carry_flag)
 
         for i in range(8):
             self._move_pointer(carry_flag)
             self.bf_code.append('[')
+            self.bf_code.append('-')
 
             self._move_pointer(pos + i)
             self.bf_code.append('+')
 
-            # If byte != 0, no more carry
-            self.bf_code.append('[')
-            self._generate_clear(carry_flag)
-
-            # Break inner loop
+            overflow = self._allocate_temp(1)
+            self._generate_set_value(1, overflow)
             temp = self._allocate_temp(1)
-            self._move_pointer(pos + i)
-            self.bf_code.append('[-<+>]')
+            scratch = self._allocate_temp(1)
+            self._copy_cell(pos + i, temp, scratch)
             self._move_pointer(temp)
-            self.bf_code.append('[-<+>]')
-            self._move_pointer(pos + i)
+            self.bf_code.append('[')
+            self._generate_clear(overflow)
+            self._generate_clear(temp)
+            self.bf_code.append(']')
+            self._free_temp(scratch)
             self._free_temp(temp)
 
-            self.bf_code.append(']')
+            self._move_pointer(overflow)
+            self.bf_code.append('[')
+            self._move_pointer(carry_flag)
+            self.bf_code.append('+')
+            self._move_pointer(overflow)
+            self.bf_code.append('-]')
+            self._free_temp(overflow)
+
             self._move_pointer(carry_flag)
             self.bf_code.append(']')
 
         self._free_temp(carry_flag)
 
+    def _decrement_multi_byte(self, pos):
+        """Decrement 8-byte integer with borrow propagation."""
+        return super()._decrement_multi_byte(pos)
+        borrow_flag = self._allocate_temp(1)
+        self._generate_set_value(1, borrow_flag)
+
+        for i in range(8):
+            self._move_pointer(borrow_flag)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+
+            is_zero = self._allocate_temp(1)
+            self._generate_set_value(1, is_zero)
+            temp = self._allocate_temp(1)
+            scratch = self._allocate_temp(1)
+            self._copy_cell(pos + i, temp, scratch)
+            self._move_pointer(temp)
+            self.bf_code.append('[')
+            self._generate_clear(is_zero)
+            self._generate_clear(temp)
+            self.bf_code.append(']')
+            self._free_temp(scratch)
+            self._free_temp(temp)
+
+            self._move_pointer(pos + i)
+            self.bf_code.append('-')
+
+            self._move_pointer(is_zero)
+            self.bf_code.append('[')
+            self._move_pointer(borrow_flag)
+            self.bf_code.append('+')
+            self._move_pointer(is_zero)
+            self.bf_code.append('-]')
+            self._free_temp(is_zero)
+
+            self._move_pointer(borrow_flag)
+            self.bf_code.append(']')
+
+        self._free_temp(borrow_flag)
+
     def _sum_bytes_to_check_zero(self, pos, sum_pos, size):
         """Sum bytes to check if all are zero (non-destructive)."""
+        return super()._sum_bytes_to_check_zero(pos, sum_pos, size)
         self._generate_clear(sum_pos)
         temp_block = self._allocate_temp(size)
         self._copy_block(pos, temp_block, size)

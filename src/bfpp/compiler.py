@@ -1,6 +1,7 @@
 import re
 
 from bfpp.lexer import preprocess, tokenize
+from bfpp.errors import BFPPCompileError, BFPPPreprocessError, make_compile_error
 from bfpp.state import CompilerState
 from bfpp.ops_memory import MemoryOpsMixin
 from bfpp.ops_runtime import RuntimeOpsMixin
@@ -110,20 +111,31 @@ class BrainFuckPlusPlusCompiler(
         Returns:
             Generated BrainFuck code string
         """
-        code = self._preprocess(code)
+        try:
+            code = self._preprocess(code)
+        except BFPPPreprocessError:
+            raise
         lines = code.split('\n')
 
         i = 0
         while i < len(lines):
-            line = lines[i].strip()
-            if not line:
-                i += 1
-                continue
+            self._last_line = i + 1
+            try:
+                line = lines[i].strip()
+                if not line:
+                    i += 1
+                    continue
 
-            tokens = self._tokenize(line)
-            if tokens:
-                i = self._process_statement(tokens, lines, i)
-            i += 1
+                tokens = self._tokenize(line)
+                if tokens:
+                    i = self._process_statement(tokens, lines, i)
+                i += 1
+            except BFPPCompileError:
+                raise
+            except BFPPPreprocessError:
+                raise
+            except Exception as e:
+                self._raise_compile_error(e, lines)
 
         bf = ''.join(self.bf_code)
         level = self.optimize_level if optimize_level is None else optimize_level
@@ -136,6 +148,10 @@ class BrainFuckPlusPlusCompiler(
     def _preprocess(self, code):
         """Remove single-line and multi-line comments from source code."""
         return preprocess(code)
+
+    def _raise_compile_error(self, e: Exception, lines):
+        line_no = getattr(self, '_last_line', 1)
+        raise make_compile_error(message=f"{type(e).__name__}: {e}", source='\n'.join(lines), line=line_no) from e
 
     def _tokenize(self, line):
         """
@@ -204,14 +220,41 @@ class BrainFuckPlusPlusCompiler(
     def _process_lines_range(self, lines, start_idx, end_idx):
         i = start_idx
         while i <= end_idx and i < len(lines):
-            line = lines[i].strip()
-            if not line:
+            self._last_line = i + 1
+            try:
+                line = lines[i].strip()
+                if not line:
+                    i += 1
+                    continue
+                tokens = self._tokenize(line)
+                if tokens:
+                    i = self._process_statement(tokens, lines, i)
                 i += 1
+            except BFPPCompileError:
+                raise
+            except BFPPPreprocessError:
+                raise
+            except Exception as e:
+                self._raise_compile_error(e, lines)
+
+    def _split_semicolon_statements(self, tokens):
+        parts = []
+        cur = []
+        depth = 0
+        for t in tokens:
+            if t == '(':
+                depth += 1
+            elif t == ')':
+                depth = max(0, depth - 1)
+            if t == ';' and depth == 0:
+                if cur:
+                    parts.append(cur)
+                cur = []
                 continue
-            tokens = self._tokenize(line)
-            if tokens:
-                i = self._process_statement(tokens, lines, i)
-            i += 1
+            cur.append(t)
+        if cur:
+            parts.append(cur)
+        return parts
 
     def _process_statement(self, tokens, lines, line_idx):
         """
@@ -219,6 +262,21 @@ class BrainFuckPlusPlusCompiler(
 
         Returns the new line index after processing.
         """
+        if not tokens:
+            return line_idx
+
+        if ';' in tokens:
+            for part in self._split_semicolon_statements(tokens):
+                if not part:
+                    continue
+                new_idx = self._process_single_statement(part, lines, line_idx)
+                if new_idx != line_idx:
+                    return new_idx
+            return line_idx
+
+        return self._process_single_statement(tokens, lines, line_idx)
+
+    def _process_single_statement(self, tokens, lines, line_idx):
         if not tokens:
             return line_idx
 
@@ -254,6 +312,16 @@ class BrainFuckPlusPlusCompiler(
                 self._handle_input(tokens[2:])
             else:
                 self.bf_code.append(',')
+        elif cmd == 'inputint':
+            if len(tokens) > 2 and tokens[1] == 'on':
+                self._handle_inputint(tokens[2:])
+            else:
+                raise ValueError("inputint requires: inputint on <intvar>")
+        elif cmd == 'inputfloat':
+            if len(tokens) > 2 and tokens[1] == 'on':
+                self._handle_inputfloat(tokens[2:])
+            else:
+                raise ValueError("inputfloat requires: inputfloat on <floatvar>")
         elif cmd == 'print' and len(tokens) > 1 and tokens[1] == 'string':
             self._handle_print_string(tokens[2:])
         elif cmd == 'varout':
@@ -452,6 +520,12 @@ class BrainFuckPlusPlusCompiler(
 
     def _handle_input(self, tokens):
         return super()._handle_input(tokens)
+
+    def _handle_inputint(self, tokens):
+        return super()._handle_inputint(tokens)
+
+    def _handle_inputfloat(self, tokens):
+        return super()._handle_inputfloat(tokens)
 
     def _process_block(self, lines, start_idx):
         """Process a code block enclosed in braces."""

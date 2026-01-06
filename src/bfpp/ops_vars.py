@@ -2,8 +2,24 @@ from __future__ import annotations
 
 import re
 
+from decimal import Decimal, InvalidOperation
+
 
 class VarsOpsMixin:
+    _FLOAT_SCALE = 1000
+    _FLOAT_R1_MIN = -32.768
+    _FLOAT_R1_MAX = 32.767
+
+    def _parse_float_literal_scaled(self, token: str) -> int:
+        try:
+            return int(Decimal(token) * self._FLOAT_SCALE)
+        except InvalidOperation:
+            raise ValueError(f"Invalid float literal: {token}")
+
+    def _check_float_r1_range(self, scaled: int) -> None:
+        if not (int(self._FLOAT_R1_MIN * self._FLOAT_SCALE) <= int(scaled) <= int(self._FLOAT_R1_MAX * self._FLOAT_SCALE)):
+            raise ValueError("float literal out of R1 range")
+
     def _split_var_ref(self, ref):
         # Returns (base_name, subscript_or_none)
         # - subscript can be int (array index) or str (dict key)
@@ -104,7 +120,7 @@ class VarsOpsMixin:
         if not dest_info.get('is_array') and not dest_info.get('is_dict'):
             raise ValueError("Not a collection")
 
-        if dest_info['type'] == 'int':
+        if dest_info['type'] in ('int', 'float', 'float64'):
             byte_values = int(value).to_bytes(8, 'little', signed=True)
             for idx in range(length):
                 pos = dest_info['pos'] + idx * elem_size
@@ -195,10 +211,12 @@ class VarsOpsMixin:
                 elem_size = 1
             elif value_type == 'int':
                 elem_size = 8
+            elif value_type in ('float', 'float64'):
+                elem_size = 8
             elif value_type == 'string':
                 elem_size = string_elem_size
             else:
-                raise NotImplementedError("Dict currently supports value types: byte, char, int, string")
+                raise NotImplementedError("Dict currently supports value types: byte, char, int, float, float64, string")
 
             length = len(keys)
             size = elem_size * length
@@ -224,7 +242,7 @@ class VarsOpsMixin:
         elem_type = raw_type
         length = None
 
-        m_type_arr = re.match(r'^(byte|char|int)\[(\d+)\]$', raw_type)
+        m_type_arr = re.match(r'^(byte|char|int|float|float64)\[(\d+)\]$', raw_type)
         if m_type_arr:
             elem_type = m_type_arr.group(1)
             length = int(m_type_arr.group(2))
@@ -273,6 +291,8 @@ class VarsOpsMixin:
         if elem_type in ('byte', 'char'):
             elem_size = 1
         elif elem_type == 'int':
+            elem_size = 8
+        elif elem_type in ('float', 'float64'):
             elem_size = 8
         else:
             raise ValueError(f"Unknown type: {elem_type}")
@@ -332,7 +352,7 @@ class VarsOpsMixin:
                 value = int(expr_tokens[0])
 
             def _slot_set_num(pos, slot):
-                if base_info['type'] == 'int':
+                if base_info['type'] in ('int', 'float', 'float64'):
                     byte_values = int(value).to_bytes(8, 'little', signed=True)
                     for i, byte_val in enumerate(byte_values):
                         self._generate_set_value(byte_val, pos=pos + i)
@@ -365,7 +385,16 @@ class VarsOpsMixin:
 
         # Numeric literal
         else:
-            lit = int(expr_tokens[0])
+            if dest_info['type'] in ('float', 'float64'):
+                if len(expr_tokens) == 2 and expr_tokens[0] == '-' and '.' in expr_tokens[1]:
+                    lit = -self._parse_float_literal_scaled(expr_tokens[1])
+                else:
+                    tok = expr_tokens[0]
+                    lit = self._parse_float_literal_scaled(tok) if '.' in tok else int(tok) * self._FLOAT_SCALE
+                if dest_info['type'] == 'float':
+                    self._check_float_r1_range(lit)
+            else:
+                lit = int(expr_tokens[0])
             if dest_info.get('is_array') or dest_info.get('is_dict'):
                 self._set_collection_numeric_literal(lit, dest_info)
             else:
@@ -392,11 +421,12 @@ class VarsOpsMixin:
         """Set a numeric literal to a variable."""
         var_info = self._resolve_var(dest_var)
 
-        if var_info['type'] == 'int':
+        if var_info['type'] in ('int', 'float', 'float64'):
             # Convert to 8-byte little-endian
             byte_values = value.to_bytes(8, 'little', signed=True)
             for i, byte_val in enumerate(byte_values):
                 self._generate_set_value(byte_val, pos=var_info['pos'] + i)
+            return
         else:
             # byte/char
             self._generate_set_value(value, pos=var_info['pos'])

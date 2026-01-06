@@ -62,6 +62,27 @@ class MemoryOpsMixin:
         self._move_pointer(temp_pos)
         self.bf_code.append('-]')
 
+    def _add_cell(self, src_pos, dest_pos, temp_pos):
+        # dest += src (byte), preserving src. temp_pos is clobbered.
+        self._move_pointer(temp_pos)
+        self._generate_clear()
+
+        self._move_pointer(src_pos)
+        self.bf_code.append('[')
+        self._move_pointer(dest_pos)
+        self.bf_code.append('+')
+        self._move_pointer(temp_pos)
+        self.bf_code.append('+')
+        self._move_pointer(src_pos)
+        self.bf_code.append('-]')
+
+        self._move_pointer(temp_pos)
+        self.bf_code.append('[')
+        self._move_pointer(src_pos)
+        self.bf_code.append('+')
+        self._move_pointer(temp_pos)
+        self.bf_code.append('-]')
+
     def _copy_block(self, src_pos, dest_pos, size):
         temp_block = self._allocate_temp(size)
         for i in range(size):

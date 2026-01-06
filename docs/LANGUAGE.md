@@ -60,6 +60,23 @@ Comments are removed before parsing.
 - Operators include: `+ - * / % & | ^ ~ == != < > <= >= !`
 - Delimiters include: `{ } ( ) [ ] , ;`
 
+### 1.4 Preprocessor macros
+
+Preprocessing runs before parsing.
+
+Supported directives (must start at the beginning of a line):
+
+- `#define NAME <replacement...>`
+- `#define NAME(arg1, arg2, ...) <replacement...>`
+- `#undef NAME`
+
+Notes:
+
+- Macro expansion is token-based.
+- Expansion does **not** happen inside string literals.
+- Parameterized macros require parentheses at the call site (use `MACRO()` for zero-arg macros).
+- Recursive macro expansion is limited (to prevent infinite recursion).
+
 ### 1.3 Case
 
 Keywords are case-insensitive (internally lowered). Identifiers are treated as written.
@@ -79,6 +96,18 @@ In general:
 - Most statements are a single line.
 - Block bodies are a sequence of statements.
 - Braces (`{ ... }`) and keyword terminators (`then/endif`, `do/endwhile`) are both accepted for `if` and `while`.
+
+### 2.1 Semicolon-separated statements
+
+Multiple statements may appear on a single line separated by `;`:
+
+```bfpp
+declare byte x ; set 65 on x ; move to x ; output
+```
+
+Rules:
+
+- Splitting only happens at top-level (not inside parentheses), so `for (init; cond; step)` keeps working.
 
 ---
 

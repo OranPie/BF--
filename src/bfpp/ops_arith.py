@@ -6,12 +6,310 @@ class ArithOpsMixin:
         """Handle arithmetic and bitwise expression assignment."""
         dest_info = self._resolve_var(dest_var)
 
-        if dest_info['type'] != 'int':
-            raise NotImplementedError("Expressions only supported for 'int' type")
+        if dest_info['type'] not in ('int', 'float', 'float64'):
+            raise NotImplementedError("Expressions only supported for 'int'/'float'/'float64' type")
 
         left, op, right = self._parse_expression(expr_tokens)
 
-        # Unary NOT
+        def _sign_extend_16(tmp16_pos):
+            flag = self._allocate_temp()
+            self._generate_clear(flag)
+            for v in range(128, 256):
+                self._generate_if_byte_equals(tmp16_pos + 1, v, lambda: self._generate_set_value(1, flag))
+            for i in range(2, 8):
+                self._generate_clear(tmp16_pos + i)
+            def _fill_ff():
+                for i in range(2, 8):
+                    self._generate_set_value(255, tmp16_pos + i)
+            self._generate_if_nonzero(flag, _fill_ff)
+            self._free_temp(flag)
+
+        def _add_1000_to_16(lo, hi):
+            # +1000 == +232 to low, +3 to high (with carry in low naturally wrapping)
+            cnt = self._allocate_temp()
+            self._generate_set_value(232, cnt)
+            self._move_pointer(cnt)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._move_pointer(lo)
+            self.bf_code.append('+')
+            self._generate_if_byte_equals(lo, 0, lambda: (self._move_pointer(hi), self.bf_code.append('+')))
+            self._move_pointer(cnt)
+            self.bf_code.append(']')
+            self._free_temp(cnt)
+            self._move_pointer(hi)
+            self.bf_code.append('+++')
+
+        def _scale_int_byte_to_float16(src_pos, dst_pos):
+            # dst_pos is 8 bytes; uses only low two bytes for scaled
+            scratch = self._allocate_temp()
+            counter = self._allocate_temp()
+            self._generate_clear(scratch)
+            self._generate_clear(counter)
+            self._copy_cell(src_pos, counter, scratch)
+            for i in range(8):
+                self._generate_clear(dst_pos + i)
+
+            self._move_pointer(counter)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            _add_1000_to_16(dst_pos + 0, dst_pos + 1)
+            self._move_pointer(counter)
+            self.bf_code.append(']')
+            _sign_extend_16(dst_pos)
+            self._free_temp(counter)
+            self._free_temp(scratch)
+
+        def _load_operand_float_scaled(operand, target_pos):
+            # Load into target_pos (8 bytes). Produces signed 16-bit scaled in bytes 0..1 with sign-extension.
+            opnd = operand[1:] if operand.startswith('$') else operand
+            runtime = self._split_runtime_subscript_ref(opnd)
+            if runtime is not None:
+                base_name, idx_var = runtime
+                base_info = self._resolve_var(base_name)
+                if base_info['type'] not in ('float', 'float64') or base_info.get('elem_size', 8) != 8:
+                    raise NotImplementedError("Runtime-subscript float operands support only float/float64")
+                self._load_runtime_subscript_into_buffer(base_info, idx_var, target_pos, 8)
+                return
+
+            if operand.startswith('$'):
+                info = self._resolve_var(operand)
+                if info['type'] in ('float', 'float64'):
+                    self._copy_block(info['pos'], target_pos, 8)
+                    return
+                if info['type'] == 'int':
+                    # Scale from int LSB only (current int runtime is effectively 1-byte for I/O)
+                    _scale_int_byte_to_float16(info['pos'], target_pos)
+                    return
+                if info['type'] in ('byte', 'char'):
+                    _scale_int_byte_to_float16(info['pos'], target_pos)
+                    return
+                raise NotImplementedError("Unsupported source type for float conversion")
+
+            # literal
+            if '.' in operand:
+                value = int(self._parse_float_literal_scaled(operand))
+            else:
+                value = int(operand) * 1000
+            b = int(value).to_bytes(2, 'little', signed=True)
+            for i in range(8):
+                self._generate_clear(target_pos + i)
+            self._generate_set_value(b[0], target_pos + 0)
+            self._generate_set_value(b[1], target_pos + 1)
+            _sign_extend_16(target_pos)
+
+        def _add_u16(a_pos, b_pos, res_pos):
+            # res = a + b over 16-bit (two's complement); operands are 8-byte, low/high used.
+            tmp_a0 = self._allocate_temp()
+            tmp_a1 = self._allocate_temp()
+            tmp_b0 = self._allocate_temp()
+            tmp_b1 = self._allocate_temp()
+            scratch = self._allocate_temp()
+            self._generate_clear(scratch)
+
+            self._copy_cell(a_pos + 0, res_pos + 0, scratch)
+            self._copy_cell(a_pos + 1, res_pos + 1, scratch)
+
+            self._generate_clear(tmp_a0)
+            self._generate_clear(tmp_a1)
+            self._generate_clear(tmp_b0)
+            self._generate_clear(tmp_b1)
+            self._copy_cell(b_pos + 0, tmp_b0, scratch)
+            self._copy_cell(b_pos + 1, tmp_b1, scratch)
+
+            # add low byte with carry into high
+            self._move_pointer(tmp_b0)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._move_pointer(res_pos + 0)
+            self.bf_code.append('+')
+            self._generate_if_byte_equals(res_pos + 0, 0, lambda: (self._move_pointer(res_pos + 1), self.bf_code.append('+')))
+            self._move_pointer(tmp_b0)
+            self.bf_code.append(']')
+
+            # add high byte
+            self._move_pointer(tmp_b1)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._move_pointer(res_pos + 1)
+            self.bf_code.append('+')
+            self._move_pointer(tmp_b1)
+            self.bf_code.append(']')
+
+            _sign_extend_16(res_pos)
+            self._free_temp(scratch)
+            self._free_temp(tmp_b1)
+            self._free_temp(tmp_b0)
+            self._free_temp(tmp_a1)
+            self._free_temp(tmp_a0)
+
+        def _sub_u16(a_pos, b_pos, res_pos):
+            # res = a - b over 16-bit; operands 8-byte, low/high used.
+            tmp_b0 = self._allocate_temp()
+            tmp_b1 = self._allocate_temp()
+            scratch = self._allocate_temp()
+            self._generate_clear(scratch)
+
+            self._copy_cell(a_pos + 0, res_pos + 0, scratch)
+            self._copy_cell(a_pos + 1, res_pos + 1, scratch)
+
+            self._generate_clear(tmp_b0)
+            self._generate_clear(tmp_b1)
+            self._copy_cell(b_pos + 0, tmp_b0, scratch)
+            self._copy_cell(b_pos + 1, tmp_b1, scratch)
+
+            # subtract low with borrow
+            self._move_pointer(tmp_b0)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._move_pointer(res_pos + 0)
+            self.bf_code.append('-')
+            self._generate_if_byte_equals(res_pos + 0, 255, lambda: (self._move_pointer(res_pos + 1), self.bf_code.append('-')))
+            self._move_pointer(tmp_b0)
+            self.bf_code.append(']')
+
+            # subtract high
+            self._move_pointer(tmp_b1)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._move_pointer(res_pos + 1)
+            self.bf_code.append('-')
+            self._move_pointer(tmp_b1)
+            self.bf_code.append(']')
+
+            _sign_extend_16(res_pos)
+            self._free_temp(scratch)
+            self._free_temp(tmp_b1)
+            self._free_temp(tmp_b0)
+
+        # Float/int conversions and float arithmetic
+        if dest_info['type'] in ('float', 'float64'):
+            if op in ('*', '/', '%', '&', '|', '^', '~'):
+                raise NotImplementedError("Float expressions currently support only + and -")
+
+            temp_left = self._allocate_temp(8)
+            temp_right = self._allocate_temp(8)
+            for i in range(8):
+                self._generate_clear(temp_left + i)
+                self._generate_clear(temp_right + i)
+            _load_operand_float_scaled(left, temp_left)
+
+            if op is None and right is None:
+                self._copy_block(temp_left, dest_info['pos'], 8)
+                self._free_temp(temp_right)
+                self._free_temp(temp_left)
+                return
+
+            _load_operand_float_scaled(right, temp_right)
+            if op == '+':
+                _add_u16(temp_left, temp_right, dest_info['pos'])
+            elif op == '-':
+                _sub_u16(temp_left, temp_right, dest_info['pos'])
+            else:
+                raise NotImplementedError("Float expressions currently support only + and -")
+
+            self._free_temp(temp_right)
+            self._free_temp(temp_left)
+            return
+
+        if dest_info['type'] == 'int' and op is None and right is None:
+            if not left.startswith('$'):
+                raise ValueError("Direct copy requires source variable")
+            src_info = self._resolve_var(left)
+            if src_info['type'] in ('float', 'float64'):
+                # Scale down by 1000: take integer part from low16
+                low = self._allocate_temp()
+                high = self._allocate_temp()
+                scratch = self._allocate_temp()
+                self._generate_clear(scratch)
+                self._generate_clear(low)
+                self._generate_clear(high)
+                self._copy_cell(src_info['pos'] + 0, low, scratch)
+                self._copy_cell(src_info['pos'] + 1, high, scratch)
+
+                int_part = self._allocate_temp()
+                self._generate_clear(int_part)
+
+                def _ge1000_flag(out_flag):
+                    self._generate_clear(out_flag)
+                    high_ge4 = self._allocate_temp()
+                    self._generate_set_value(1, high_ge4)
+                    for v in (0, 1, 2, 3):
+                        self._generate_if_byte_equals(high, v, lambda: self._generate_clear(high_ge4))
+                    self._generate_if_nonzero(high_ge4, lambda: self._generate_set_value(1, out_flag))
+                    high_eq3 = self._allocate_temp()
+                    self._generate_clear(high_eq3)
+                    self._generate_if_byte_equals(high, 3, lambda: self._generate_set_value(1, high_eq3))
+                    low_ge232 = self._allocate_temp()
+                    self._generate_clear(low_ge232)
+                    for vv in range(232, 256):
+                        self._generate_if_byte_equals(low, vv, lambda: self._generate_set_value(1, low_ge232))
+                    self._generate_if_nonzero(high_eq3, lambda: self._generate_if_nonzero(low_ge232, lambda: self._generate_set_value(1, out_flag)))
+                    self._free_temp(low_ge232)
+                    self._free_temp(high_eq3)
+                    self._free_temp(high_ge4)
+
+                def _sub_1000():
+                    low_ge232 = self._allocate_temp()
+                    self._generate_clear(low_ge232)
+                    for vv in range(232, 256):
+                        self._generate_if_byte_equals(low, vv, lambda: self._generate_set_value(1, low_ge232))
+                    def _sub_ge():
+                        cnt = self._allocate_temp()
+                        self._generate_set_value(232, cnt)
+                        self._move_pointer(cnt)
+                        self.bf_code.append('[')
+                        self.bf_code.append('-')
+                        self._move_pointer(low)
+                        self.bf_code.append('-')
+                        self._move_pointer(cnt)
+                        self.bf_code.append(']')
+                        self._free_temp(cnt)
+                        self._move_pointer(high)
+                        self.bf_code.append('---')
+                    def _sub_lt():
+                        self._move_pointer(low)
+                        self.bf_code.append('+' * 24)
+                        self._move_pointer(high)
+                        self.bf_code.append('----')
+                    self._generate_if_nonzero(low_ge232, _sub_ge)
+                    inv = self._allocate_temp()
+                    self._generate_set_value(1, inv)
+                    self._move_pointer(low_ge232)
+                    self.bf_code.append('[')
+                    self._move_pointer(inv)
+                    self.bf_code.append('-')
+                    self._generate_clear(low_ge232)
+                    self.bf_code.append(']')
+                    self._generate_if_nonzero(inv, _sub_lt)
+                    self._free_temp(inv)
+                    self._free_temp(low_ge232)
+
+                ge1000 = self._allocate_temp()
+                _ge1000_flag(ge1000)
+                self._move_pointer(ge1000)
+                self.bf_code.append('[')
+                self._move_pointer(int_part)
+                self.bf_code.append('+')
+                _sub_1000()
+                self._generate_clear(ge1000)
+                _ge1000_flag(ge1000)
+                self._move_pointer(ge1000)
+                self.bf_code.append(']')
+                self._free_temp(ge1000)
+
+                for i in range(8):
+                    self._generate_clear(dest_info['pos'] + i)
+                self._copy_cell(int_part, dest_info['pos'], scratch)
+
+                self._free_temp(int_part)
+                self._free_temp(scratch)
+                self._free_temp(high)
+                self._free_temp(low)
+                return
+
+            if src_info['type'] != 'int':
+                raise NotImplementedError("int copy supports only int->int and float->int")
         if op == '~':
             temp_operand = self._allocate_temp(8)
             self._load_operand(left, temp_operand)

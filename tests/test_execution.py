@@ -327,6 +327,143 @@ def test_match_statement_byte():
     print(f"✗ match statement (byte) failed. Output: {output}, Error: {error}")
     return False
 
+
+def test_macros():
+    print("\nTesting macro support...")
+
+    code = """
+    #define NL "\n"
+    #define SET2(VAR) set 2 on VAR
+    #define PRINT_OK() print string "OK" ; print string NL
+
+    declare byte a
+    SET2(a)
+
+    match (a) {
+        case 2:
+            PRINT_OK()
+        default:
+            print string "BAD" ; print string NL
+    }
+    """
+
+    compiler = BrainFuckPlusPlusCompiler()
+    bf_code = compiler.compile(code)
+    output, error = execute_bf_code_inprocess(bf_code)
+
+    if "OK" in output:
+        print("✓ macros work")
+        return True
+    print(f"✗ macros failed. Output: {output}, Error: {error}")
+    return False
+
+
+def test_semicolon_statements():
+    print("\nTesting semicolon-separated statements...")
+
+    code = """
+    declare byte x ; set 65 on x ; move to x ; output
+    """
+
+    compiler = BrainFuckPlusPlusCompiler()
+    bf_code = compiler.compile(code)
+    output, error = execute_bf_code_inprocess(bf_code)
+
+    if output == "A":
+        print("✓ semicolon-separated statements work")
+        return True
+    print(f"✗ semicolon-separated statements failed. Output: {output}, Error: {error}")
+    return False
+
+
+def test_inputint_on_int():
+    print("\nTesting inputint on int...")
+
+    code = """
+    declare int n
+    inputint on n
+    varout n
+    """
+
+    compiler = BrainFuckPlusPlusCompiler()
+    bf_code = compiler.compile(code)
+    output, error = execute_bf_code_inprocess(bf_code, input_data="123\n")
+
+    if output.strip() == "123":
+        print("✓ inputint on int works")
+        return True
+    print(f"✗ inputint on int failed. Output: {output}, Error: {error}")
+    return False
+
+
+def test_inputfloat_on_float():
+    print("\nTesting inputfloat on float...")
+
+    code = """
+    declare float x
+    inputfloat on x
+    if (x == 1.234) {
+        print string "OK"
+    } else {
+        print string "BAD"
+    }
+    """
+
+    compiler = BrainFuckPlusPlusCompiler()
+    bf_code = compiler.compile(code)
+    output, error = execute_bf_code_inprocess(bf_code, input_data="1.234\n")
+
+    if "OK" in output:
+        print("✓ inputfloat on float works")
+        return True
+    print(f"✗ inputfloat on float failed. Output: {output}, Error: {error}")
+    return False
+
+
+def test_varout_float_format():
+    print("\nTesting varout float format...")
+
+    code = """
+    declare float x
+    set 1.234 on x
+    varout x
+    """
+
+    compiler = BrainFuckPlusPlusCompiler()
+    bf_code = compiler.compile(code)
+    output, error = execute_bf_code_inprocess(bf_code)
+
+    if output.strip() == "1.234":
+        print("✓ varout float format works")
+        return True
+    print(f"✗ varout float format failed. Output: {output}, Error: {error}")
+    return False
+
+
+def test_float_add_sub_and_conversion():
+    print("\nTesting float add/sub and conversion...")
+
+    code = """
+    declare int i
+    set 2 on i
+
+    declare float x
+    set $i on x
+    set $x + 1.250 on x
+    set $x - 0.250 on x
+    varout x
+    """
+
+    compiler = BrainFuckPlusPlusCompiler()
+    bf_code = compiler.compile(code)
+    output, error = execute_bf_code_inprocess(bf_code)
+
+    if output.strip() == "3.000":
+        print("✓ float add/sub + int->float conversion works")
+        return True
+    print(f"✗ float add/sub + conversion failed. Output: {output}, Error: {error}")
+    return False
+
 def main():
     print("=== BF++ Execution Test ===\n")
     
@@ -342,6 +479,12 @@ def main():
         test_input_on_string,
         test_match_statement,
         test_match_statement_byte,
+        test_macros,
+        test_semicolon_statements,
+        test_inputint_on_int,
+        test_inputfloat_on_float,
+        test_varout_float_format,
+        test_float_add_sub_and_conversion,
     ]
     
     all_passed = True

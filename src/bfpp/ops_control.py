@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+
 
 class ControlFlowMixin:
     def _extract_parentheses_content(self, tokens):
@@ -625,7 +627,13 @@ class ControlFlowMixin:
 
             if len(tokens) == 3:
                 try:
-                    value = int(tokens[2])
+                    if '.' in tokens[2]:
+                        try:
+                            value = int(Decimal(tokens[2]) * 1000)
+                        except InvalidOperation:
+                            raise ValueError(f"Invalid float literal: {tokens[2]}")
+                    else:
+                        value = int(tokens[2])
                 except Exception:
                     rhs_is_var = True
                     rhs_ref = tokens[2]
@@ -642,15 +650,15 @@ class ControlFlowMixin:
                 if rt is not None:
                     base_name, idx_var = rt
                     base_info = self._resolve_var(base_name)
-                    if base_info['type'] != 'int' or base_info.get('elem_size', 8) != 8:
-                        raise NotImplementedError('Runtime-subscript comparisons support only int elements')
+                    if base_info['type'] not in ('int', 'float') or base_info.get('elem_size', 8) != 8:
+                        raise NotImplementedError('Runtime-subscript comparisons support only 8-byte int/float elements')
                     tmp = self._allocate_temp(8)
                     temps_to_free.append(tmp)
                     self._load_runtime_subscript_into_buffer(base_info, idx_var, tmp, 8)
                     return tmp
                 info = self._resolve_var(ref)
-                if info['type'] != 'int' or info['size'] != 8:
-                    raise NotImplementedError("Comparisons currently supported only for 8-byte 'int' values")
+                if info['type'] not in ('int', 'float') or info['size'] != 8:
+                    raise NotImplementedError("Comparisons currently supported only for 8-byte 'int'/'float' values")
                 return info['pos']
 
             var_pos = _resolve_int_operand(left_ref)

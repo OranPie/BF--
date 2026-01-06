@@ -209,14 +209,16 @@ class VarsOpsMixin:
 
             if value_type in ('byte', 'char'):
                 elem_size = 1
-            elif value_type == 'int':
+            elif value_type == 'int16':
+                elem_size = 2
+            elif value_type in ('int', 'int64'):
                 elem_size = 8
             elif value_type in ('float', 'float64'):
                 elem_size = 8
             elif value_type == 'string':
                 elem_size = string_elem_size
             else:
-                raise NotImplementedError("Dict currently supports value types: byte, char, int, float, float64, string")
+                raise NotImplementedError("Dict currently supports value types: byte, char, int16, int64, float, float64, string")
 
             length = len(keys)
             size = elem_size * length
@@ -242,7 +244,7 @@ class VarsOpsMixin:
         elem_type = raw_type
         length = None
 
-        m_type_arr = re.match(r'^(byte|char|int|float|float64)\[(\d+)\]$', raw_type)
+        m_type_arr = re.match(r'^(byte|char|int|int16|int64|float|float64)\[(\d+)\]$', raw_type)
         if m_type_arr:
             elem_type = m_type_arr.group(1)
             length = int(m_type_arr.group(2))
@@ -290,7 +292,9 @@ class VarsOpsMixin:
 
         if elem_type in ('byte', 'char'):
             elem_size = 1
-        elif elem_type == 'int':
+        elif elem_type == 'int16':
+            elem_size = 2
+        elif elem_type in ('int', 'int64'):
             elem_size = 8
         elif elem_type in ('float', 'float64'):
             elem_size = 8
@@ -352,8 +356,9 @@ class VarsOpsMixin:
                 value = int(expr_tokens[0])
 
             def _slot_set_num(pos, slot):
-                if base_info['type'] in ('int', 'float', 'float64'):
-                    byte_values = int(value).to_bytes(8, 'little', signed=True)
+                if base_info['type'] in ('int', 'int16', 'int64', 'float', 'float64'):
+                    elem_size = base_info['elem_size']
+                    byte_values = int(value).to_bytes(elem_size, 'little', signed=True)
                     for i, byte_val in enumerate(byte_values):
                         self._generate_set_value(byte_val, pos=pos + i)
                 else:
@@ -421,9 +426,10 @@ class VarsOpsMixin:
         """Set a numeric literal to a variable."""
         var_info = self._resolve_var(dest_var)
 
-        if var_info['type'] in ('int', 'float', 'float64'):
-            # Convert to 8-byte little-endian
-            byte_values = value.to_bytes(8, 'little', signed=True)
+        if var_info['type'] in ('int', 'int16', 'int64', 'float', 'float64'):
+            # Convert to appropriate byte size
+            elem_size = var_info['size'] if not (var_info.get('is_array') or var_info.get('is_dict')) else var_info['elem_size']
+            byte_values = value.to_bytes(elem_size, 'little', signed=True)
             for i, byte_val in enumerate(byte_values):
                 self._generate_set_value(byte_val, pos=var_info['pos'] + i)
             return
@@ -450,11 +456,12 @@ class VarsOpsMixin:
                     raise ValueError("Runtime subscript target must be array or dict")
 
                 def _slot_incdec(pos, slot):
-                    if base_info['type'] == 'int':
+                    if base_info['type'] in ('int', 'int16', 'int64'):
+                        elem_size = base_info['elem_size']
                         if operation == 'inc':
-                            self._increment_multi_byte(pos)
+                            self._increment_multi_byte(pos, size=elem_size)
                         else:
-                            self._decrement_multi_byte(pos)
+                            self._decrement_multi_byte(pos, size=elem_size)
                     else:
                         self._move_pointer(pos)
                         if operation == 'inc':
@@ -469,11 +476,12 @@ class VarsOpsMixin:
 
         if var_name is not None:
             var_info = self._resolve_var(var_name)
-            if var_info['type'] == 'int':
+            if var_info['type'] in ('int', 'int16', 'int64'):
+                elem_size = var_info['size']
                 if operation == 'inc':
-                    self._increment_multi_byte(var_info['pos'])
+                    self._increment_multi_byte(var_info['pos'], size=elem_size)
                 else:
-                    self._decrement_multi_byte(var_info['pos'])
+                    self._decrement_multi_byte(var_info['pos'], size=elem_size)
                 return
 
         if operation == 'inc':

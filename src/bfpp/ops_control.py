@@ -291,12 +291,9 @@ class ControlFlowMixin:
         if subj_ref.lstrip('-').isdigit():
             raise NotImplementedError('match subject does not support numeric literals yet; use a variable')
         subj_info = self._resolve_var(subject)
-        if subj_info['type'] not in ('int', 'byte', 'char'):
-            raise NotImplementedError('match subject currently supports only int/byte/char variables')
-        if subj_info['type'] == 'int' and subj_info['size'] != 8:
-            raise NotImplementedError('match subject currently supports only 8-byte int variables')
-        if subj_info['type'] in ('byte', 'char') and subj_info['size'] != 1:
-            raise NotImplementedError('match subject currently supports only 1-byte byte/char variables')
+        if subj_info['type'] not in ('int', 'int16', 'int64', 'byte', 'char'):
+            raise NotImplementedError('match subject currently supports only integer and byte/char variables')
+        subj_size = subj_info['size']
 
         def _find_brace_block_end(start_idx: int) -> int:
             # start_idx points at a line containing an opening '{'.
@@ -455,7 +452,7 @@ class ControlFlowMixin:
             return end_line
 
         def _match_case_equals_int_literal(case_tokens, flag_pos):
-            # Strict equality check between match subject (8-byte int variable) and a numeric literal.
+            # Strict equality check between match subject (multi-byte int variable) and a numeric literal.
             # Writes 1 to flag_pos if equal, else 0.
             if not case_tokens:
                 raise ValueError('case requires a value')
@@ -466,20 +463,20 @@ class ControlFlowMixin:
 
             self._generate_clear(flag_pos)
 
-            temp_a = self._allocate_temp(8)
-            temp_b = self._allocate_temp(8)
-            temp_diff = self._allocate_temp(8)
+            temp_a = self._allocate_temp(subj_size)
+            temp_b = self._allocate_temp(subj_size)
+            temp_diff = self._allocate_temp(subj_size)
 
-            self._copy_block(subj_info['pos'], temp_a, 8)
-            byte_values = int(value).to_bytes(8, 'little', signed=True)
+            self._copy_block(subj_info['pos'], temp_a, subj_size)
+            byte_values = int(value).to_bytes(subj_size, 'little', signed=True)
             for i, byte_val in enumerate(byte_values):
                 self._generate_set_value(byte_val, pos=temp_b + i)
 
-            self._perform_sub(temp_a, temp_b, temp_diff)
+            self._perform_sub(temp_a, temp_b, temp_diff, size=subj_size)
 
             # flag_pos = 1 iff all bytes in temp_diff are 0
             self._generate_set_value(1, flag_pos)
-            for i in range(8):
+            for i in range(subj_size):
                 self._move_pointer(temp_diff + i)
                 self.bf_code.append('[')
                 self._generate_clear(flag_pos)
@@ -521,7 +518,7 @@ class ControlFlowMixin:
 
             def _run_case_when_unmatched():
                 cond_flag = self._allocate_temp()
-                if subj_info['type'] == 'int':
+                if subj_info['type'] in ('int', 'int16', 'int64'):
                     _match_case_equals_int_literal(case_value_tokens, cond_flag)
                 else:
                     _match_case_equals_byte_literal(case_value_tokens, cond_flag)
@@ -650,37 +647,43 @@ class ControlFlowMixin:
                 if rt is not None:
                     base_name, idx_var = rt
                     base_info = self._resolve_var(base_name)
-                    if base_info['type'] not in ('int', 'float') or base_info.get('elem_size', 8) != 8:
-                        raise NotImplementedError('Runtime-subscript comparisons support only 8-byte int/float elements')
-                    tmp = self._allocate_temp(8)
+                    if base_info['type'] not in ('int', 'int16', 'int64', 'float', 'float64'):
+                        raise NotImplementedError('Runtime-subscript comparisons support only integer and float elements')
+                    size = base_info.get('elem_size', 8)
+                    tmp = self._allocate_temp(size)
                     temps_to_free.append(tmp)
-                    self._load_runtime_subscript_into_buffer(base_info, idx_var, tmp, 8)
-                    return tmp
+                    self._load_runtime_subscript_into_buffer(base_info, idx_var, tmp, size)
+                    return tmp, size
                 info = self._resolve_var(ref)
-                if info['type'] not in ('int', 'float') or info['size'] != 8:
-                    raise NotImplementedError("Comparisons currently supported only for 8-byte 'int'/'float' values")
-                return info['pos']
+                if info['type'] not in ('int', 'int16', 'int64', 'float', 'float64'):
+                    raise NotImplementedError("Comparisons currently supported only for integer and float values")
+                return info['pos'], info['size']
 
-            var_pos = _resolve_int_operand(left_ref)
+            var_pos, var_size = _resolve_int_operand(left_ref)
 
             if rhs_is_var:
-                rhs_pos = _resolve_int_operand(rhs_ref)
+                rhs_pos, rhs_size = _resolve_int_operand(rhs_ref)
+                if var_size != rhs_size:
+                    raise NotImplementedError("Mixed-size integer comparisons not yet supported")
+                comp_size = var_size
+            else:
+                comp_size = var_size
 
             if op in ('==', '!=', '<', '>', '<=', '>='):
-                temp_a = self._allocate_temp(8)
-                temp_b = self._allocate_temp(8)
-                temp_diff = self._allocate_temp(8)
+                temp_a = self._allocate_temp(comp_size)
+                temp_b = self._allocate_temp(comp_size)
+                temp_diff = self._allocate_temp(comp_size)
 
-                self._copy_block(var_pos, temp_a, 8)
+                self._copy_block(var_pos, temp_a, comp_size)
 
                 if rhs_is_var:
-                    self._copy_block(rhs_pos, temp_b, 8)
+                    self._copy_block(rhs_pos, temp_b, comp_size)
                 else:
-                    byte_values = int(value).to_bytes(8, 'little', signed=True)
+                    byte_values = int(value).to_bytes(comp_size, 'little', signed=True)
                     for i, byte_val in enumerate(byte_values):
                         self._generate_set_value(byte_val, pos=temp_b + i)
 
-                self._perform_sub(temp_a, temp_b, temp_diff)
+                self._perform_sub(temp_a, temp_b, temp_diff, size=comp_size)
 
                 is_negative = self._allocate_temp()
                 self._generate_set_value(1, is_negative)
@@ -688,7 +691,7 @@ class ControlFlowMixin:
                 test = self._allocate_temp()
                 temp_val = self._allocate_temp()
                 scr = self._allocate_temp()
-                self._copy_cell(temp_diff + 7, test, scr)
+                self._copy_cell(temp_diff + comp_size - 1, test, scr)
                 self._generate_set_value(128, temp_val)
                 self._move_pointer(test)
                 self.bf_code.append('['
@@ -710,7 +713,7 @@ class ControlFlowMixin:
 
                 is_zero = self._allocate_temp()
                 self._generate_set_value(1, is_zero)
-                for i in range(8):
+                for i in range(comp_size):
                     self._move_pointer(temp_diff + i)
                     self.bf_code.append('[')
                     self._generate_clear(is_zero)

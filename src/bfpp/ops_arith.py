@@ -6,10 +6,11 @@ class ArithOpsMixin:
         """Handle arithmetic and bitwise expression assignment."""
         dest_info = self._resolve_var(dest_var)
 
-        if dest_info['type'] not in ('int', 'float', 'float64'):
-            raise NotImplementedError("Expressions only supported for 'int'/'float'/'float64' type")
+        if dest_info['type'] not in ('int', 'int16', 'int64', 'float', 'float64'):
+            raise NotImplementedError("Expressions only supported for integer and float types")
 
         left, op, right = self._parse_expression(expr_tokens)
+        dest_size = dest_info['size']
 
         def _sign_extend_16(tmp16_pos):
             flag = self._allocate_temp()
@@ -182,8 +183,8 @@ class ArithOpsMixin:
             self._free_temp(tmp_b1)
             self._free_temp(tmp_b0)
 
-        # Float/int conversions and float arithmetic
         if dest_info['type'] in ('float', 'float64'):
+            # ... (float logic kept as is for now, it already assumes 8-byte scaled)
             if op in ('*', '/', '%', '&', '|', '^', '~'):
                 raise NotImplementedError("Float expressions currently support only + and -")
 
@@ -212,12 +213,19 @@ class ArithOpsMixin:
             self._free_temp(temp_left)
             return
 
-        if dest_info['type'] == 'int' and op is None and right is None:
+        # Handle conversions for integer destinations
+        if dest_info['type'] in ('int', 'int16', 'int64') and op is None and right is None:
             if not left.startswith('$'):
-                raise ValueError("Direct copy requires source variable")
+                # literal assignment - handled by VarsOpsMixin usually, but here if called
+                val = int(left)
+                byte_values = val.to_bytes(dest_size, 'little', signed=True)
+                for i, b in enumerate(byte_values):
+                    self._generate_set_value(b, dest_info['pos'] + i)
+                return
+
             src_info = self._resolve_var(left)
             if src_info['type'] in ('float', 'float64'):
-                # Scale down by 1000: take integer part from low16
+                # Float -> Int conversion (scale down by 1000)
                 low = self._allocate_temp()
                 high = self._allocate_temp()
                 scratch = self._allocate_temp()
@@ -298,7 +306,7 @@ class ArithOpsMixin:
                 self.bf_code.append(']')
                 self._free_temp(ge1000)
 
-                for i in range(8):
+                for i in range(dest_size):
                     self._generate_clear(dest_info['pos'] + i)
                 self._copy_cell(int_part, dest_info['pos'], scratch)
 
@@ -308,50 +316,61 @@ class ArithOpsMixin:
                 self._free_temp(low)
                 return
 
-            if src_info['type'] != 'int':
-                raise NotImplementedError("int copy supports only int->int and float->int")
-        if op == '~':
-            temp_operand = self._allocate_temp(8)
-            self._load_operand(left, temp_operand)
-            self._perform_bitwise_not(temp_operand, dest_info['pos'])
-            self._free_temp(temp_operand)
-
-        # Variable copy
-        elif op is None and right is None:
-            if not left.startswith('$'):
-                raise ValueError("Direct copy requires source variable")
-            src_info = self._resolve_var(left)
-            self._copy_block(src_info['pos'], dest_info['pos'], 8)
-
-        # Binary operations
-        else:
-            temp_left = self._allocate_temp(8)
-            temp_right = self._allocate_temp(8)
-
-            self._load_operand(left, temp_left)
-            self._load_operand(right, temp_right)
-
-            if op == '&':
-                self._perform_bitwise_and(temp_left, temp_right, dest_info['pos'])
-            elif op == '|':
-                self._perform_bitwise_or(temp_left, temp_right, dest_info['pos'])
-            elif op == '^':
-                self._perform_bitwise_xor(temp_left, temp_right, dest_info['pos'])
-            elif op == '+':
-                self._perform_add(temp_left, temp_right, dest_info['pos'])
-            elif op == '-':
-                self._perform_sub(temp_left, temp_right, dest_info['pos'])
-            elif op == '*':
-                self._perform_mul(temp_left, temp_right, dest_info['pos'])
-            elif op == '/':
-                self._perform_div(temp_left, temp_right, dest_info['pos'])
-            elif op == '%':
-                self._perform_mod(temp_left, temp_right, dest_info['pos'])
+            # Integer -> Integer copy/conversion
+            src_size = src_info['size']
+            if src_size == dest_size:
+                self._copy_block(src_info['pos'], dest_info['pos'], dest_size)
+            elif src_size < dest_size:
+                # Widen (zero-extend for now as sign-extension is complex for arbitrary sizes)
+                self._copy_block(src_info['pos'], dest_info['pos'], src_size)
+                for i in range(src_size, dest_size):
+                    self._generate_clear(dest_info['pos'] + i)
             else:
-                raise NotImplementedError(f"Operator '{op}' not implemented")
+                # Narrow (truncate)
+                self._copy_block(src_info['pos'], dest_info['pos'], dest_size)
+            return
 
-            self._free_temp(temp_right)
-            self._free_temp(temp_left)
+        if op == '~':
+            temp_operand = self._allocate_temp(dest_size)
+            self._load_operand(left, temp_operand, size=dest_size)
+            self._perform_bitwise_not(temp_operand, dest_info['pos'], size=dest_size)
+            self._free_temp(temp_operand)
+            return
+
+        # Binary operations for integers
+        temp_left = self._allocate_temp(dest_size)
+        temp_right = self._allocate_temp(dest_size)
+
+        self._load_operand(left, temp_left, size=dest_size)
+        self._load_operand(right, temp_right, size=dest_size)
+
+        if op == '&':
+            self._perform_bitwise_and(temp_left, temp_right, dest_info['pos'], size=dest_size)
+        elif op == '|':
+            self._perform_bitwise_or(temp_left, temp_right, dest_info['pos'], size=dest_size)
+        elif op == '^':
+            self._perform_bitwise_xor(temp_left, temp_right, dest_info['pos'], size=dest_size)
+        elif op == '+':
+            self._perform_add(temp_left, temp_right, dest_info['pos'], size=dest_size)
+        elif op == '-':
+            self._perform_sub(temp_left, temp_right, dest_info['pos'], size=dest_size)
+        elif op == '*':
+            if dest_size != 8:
+                raise NotImplementedError("Multiplication only supported for 8-byte integers currently")
+            self._perform_mul(temp_left, temp_right, dest_info['pos'])
+        elif op == '/':
+            if dest_size != 8:
+                raise NotImplementedError("Division only supported for 8-byte integers currently")
+            self._perform_div(temp_left, temp_right, dest_info['pos'])
+        elif op == '%':
+            if dest_size != 8:
+                raise NotImplementedError("Modulo only supported for 8-byte integers currently")
+            self._perform_mod(temp_left, temp_right, dest_info['pos'])
+        else:
+            raise NotImplementedError(f"Operator '{op}' not implemented")
+
+        self._free_temp(temp_right)
+        self._free_temp(temp_left)
 
     def _parse_expression(self, tokens):
         """Parse expression tokens into operands and operator."""
@@ -364,57 +383,53 @@ class ArithOpsMixin:
         else:
             raise ValueError(f"Cannot parse expression: {' '.join(tokens)}")
 
-    def _load_operand(self, operand, target_pos):
+    def _load_operand(self, operand, target_pos, size=8):
         """Load a variable or literal into memory position."""
         op = operand[1:] if operand.startswith('$') else operand
         runtime = self._split_runtime_subscript_ref(op)
         if runtime is not None:
             base_name, idx_var = runtime
             base_info = self._resolve_var(base_name)
-            if base_info['type'] != 'int' or base_info.get('elem_size', 8) != 8:
-                raise NotImplementedError("Runtime-subscripted expression operands currently support only int elements")
-            self._load_runtime_subscript_into_buffer(base_info, idx_var, target_pos, 8)
+            if base_info['type'] not in ('int', 'int16', 'int64') or base_info.get('elem_size', 8) != size:
+                raise NotImplementedError(f"Runtime-subscripted expression operands currently support only {size}-byte int elements")
+            self._load_runtime_subscript_into_buffer(base_info, idx_var, target_pos, size)
             return
 
         if operand.startswith('$'):
             var_info = self._resolve_var(operand)
-            if var_info['type'] != 'int' or var_info['size'] != 8:
-                raise NotImplementedError("Expression operands currently support only 8-byte int variables")
-            self._copy_block(var_info['pos'], target_pos, 8)
+            if var_info['type'] not in ('int', 'int16', 'int64') or var_info['size'] != size:
+                raise NotImplementedError(f"Expression operands currently support only {size}-byte int variables")
+            self._copy_block(var_info['pos'], target_pos, size)
             return
 
         value = int(operand)
-        byte_values = value.to_bytes(8, 'little', signed=True)
+        byte_values = value.to_bytes(size, 'little', signed=True)
         for i, byte_val in enumerate(byte_values):
             self._generate_set_value(byte_val, pos=target_pos + i)
 
-    def _perform_bitwise_and(self, pos_a, pos_b, pos_result):
-        """Perform bytewise AND on two 8-byte integers."""
-        for i in range(8):
+    def _perform_bitwise_and(self, pos_a, pos_b, pos_result, size=8):
+        """Perform bytewise AND on two multi-byte integers."""
+        for i in range(size):
             self._bitwise_byte_operation('and', pos_a + i, pos_b + i, pos_result + i)
 
-    def _perform_bitwise_or(self, pos_a, pos_b, pos_result):
-        """Perform bytewise OR on two 8-byte integers."""
-        for i in range(8):
+    def _perform_bitwise_or(self, pos_a, pos_b, pos_result, size=8):
+        """Perform bytewise OR on two multi-byte integers."""
+        for i in range(size):
             self._bitwise_byte_operation('or', pos_a + i, pos_b + i, pos_result + i)
 
-    def _perform_bitwise_xor(self, pos_a, pos_b, pos_result):
-        """Perform bytewise XOR on two 8-byte integers."""
-        for i in range(8):
+    def _perform_bitwise_xor(self, pos_a, pos_b, pos_result, size=8):
+        """Perform bytewise XOR on two multi-byte integers."""
+        for i in range(size):
             self._bitwise_byte_operation('xor', pos_a + i, pos_b + i, pos_result + i)
 
-    def _perform_bitwise_not(self, pos_in, pos_result):
+    def _perform_bitwise_not(self, pos_in, pos_result, size=8):
         """
-        Perform bytewise NOT (255 - value) on 8-byte integer.
-
-        BF Code Pattern:
-        - Set result to 255
-        - Subtract input value
+        Perform bytewise NOT (255 - value) on multi-byte integer.
         """
-        temp_in = self._allocate_temp(8)
-        self._copy_block(pos_in, temp_in, 8)
+        temp_in = self._allocate_temp(size)
+        self._copy_block(pos_in, temp_in, size)
 
-        for i in range(8):
+        for i in range(size):
             self._generate_set_value(255, pos=pos_result + i)
             # Subtract temp_in[i] from result[i]
             self._move_pointer(temp_in + i)
@@ -423,83 +438,50 @@ class ArithOpsMixin:
             self.bf_code.append('-')
             self._move_pointer(temp_in + i)
             self.bf_code.append('-]')
+            self._move_pointer(pos_result + i)
 
         self._free_temp(temp_in)
 
-    def _perform_add(self, pos_a, pos_b, pos_result):
-        """Perform addition on two 8-byte integers."""
-        carry_flag = self._allocate_temp()
-
-        # Clear result
-        for i in range(8):
-            self._generate_clear(pos_result + i)
-
-        # Add each byte with carry propagation
-        for i in range(8):
-            # Copy byte A to result
-            self._copy_cell(pos_a + i, pos_result + i, self._allocate_temp())
-            self._free_temp(self.current_ptr)
-
-            # Add byte B to result
-            self._move_pointer(pos_b + i)
+    def _perform_add(self, pos_a, pos_b, pos_result, size=8):
+        """Robust and correct multi-byte addition."""
+        # 1. Initialize result with A
+        self._copy_block(pos_a, pos_result, size)
+        
+        # 2. Add B byte-by-byte with carry propagation
+        # We use a temporary copy of B to avoid destroying it
+        temp_b = self._allocate_temp(size)
+        self._copy_block(pos_b, temp_b, size)
+        
+        for i in range(size):
+            # For each byte of B, repeatedly increment result with carry
+            self._move_pointer(temp_b + i)
             self.bf_code.append('[')
-            self._move_pointer(pos_result + i)
-            self.bf_code.append('+')
-            self._move_pointer(pos_b + i)
-            self.bf_code.append('-]')
-
-            # Check for overflow (if result byte wrapped around)
-            # This is simplified - proper carry propagation is complex in BF
-            if i < 7:  # Don't check carry on most significant byte
-                self._generate_set_value(1, carry_flag)
-                self._move_pointer(pos_result + i)
-                self.bf_code.append('[')  # If result is non-zero, might have overflow
-                self._generate_clear(carry_flag)
-                self.bf_code.append(']')
-
-                # Add carry to next byte (simplified approach)
-                self._move_pointer(carry_flag)
-                self.bf_code.append('[')
-                self._move_pointer(pos_result + i + 1)
-                self.bf_code.append('+')
-                self._generate_clear(carry_flag)
-                self.bf_code.append(']')
-
-        self._free_temp(carry_flag)
-
-    def _perform_sub(self, pos_a, pos_b, pos_result):
-        """Perform subtraction (a - b) on two 8-byte integers."""
-        borrow_flag = self._allocate_temp()
-
-        # Copy A to result
-        self._copy_block(pos_a, pos_result, 8)
-
-        # Subtract B from result
-        for i in range(8):
-            # Subtract byte B from result byte
-            self._move_pointer(pos_b + i)
-            self.bf_code.append('[')
-            self._move_pointer(pos_result + i)
             self.bf_code.append('-')
-            self._move_pointer(pos_b + i)
-            self.bf_code.append('-]')
+            self._increment_multi_byte(pos_result + i, size=size - i)
+            self._move_pointer(temp_b + i)
+            self.bf_code.append(']')
+            
+        self._free_temp(temp_b)
 
-            # Handle borrow (simplified)
-            if i < 7:  # Don't borrow from most significant byte
-                # Check if we need to borrow (if result underflowed)
-                self._generate_set_value(1, borrow_flag)
-                self._move_pointer(pos_result + i)
-                self.bf_code.append('[')  # If result wrapped around
-                # Add 256 and set borrow for next byte
-                for _ in range(255):
-                    self.bf_code.append('+')
-                self._generate_clear(borrow_flag)
-                self._move_pointer(pos_result + i + 1)
-                self.bf_code.append('-')
-                self._move_pointer(pos_result + i)
-                self.bf_code.append(']')
-
-        self._free_temp(borrow_flag)
+    def _perform_sub(self, pos_a, pos_b, pos_result, size=8):
+        """Robust and correct multi-byte subtraction."""
+        # 1. Initialize result with A
+        self._copy_block(pos_a, pos_result, size)
+        
+        # 2. Subtract B byte-by-byte with borrow propagation
+        temp_b = self._allocate_temp(size)
+        self._copy_block(pos_b, temp_b, size)
+        
+        for i in range(size):
+            # For each byte of B, repeatedly decrement result with borrow
+            self._move_pointer(temp_b + i)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._decrement_multi_byte(pos_result + i, size=size - i)
+            self._move_pointer(temp_b + i)
+            self.bf_code.append(']')
+            
+        self._free_temp(temp_b)
 
     def _perform_mul(self, pos_a, pos_b, pos_result):
         """Perform multiplication using repeated addition (simplified)."""
@@ -805,12 +787,12 @@ class ArithOpsMixin:
         self._free_temp(b_remain)
         self._free_temp(a_remain)
 
-    def _increment_multi_byte(self, pos):
-        """Increment 8-byte integer with carry propagation."""
+    def _increment_multi_byte(self, pos, size=8):
+        """Increment multi-byte integer with carry propagation."""
         carry_flag = self._allocate_temp(1)
         self._generate_set_value(1, carry_flag)
 
-        for i in range(8):
+        for i in range(size):
             self._move_pointer(carry_flag)
             self.bf_code.append('[')
             self.bf_code.append('-')
@@ -844,12 +826,12 @@ class ArithOpsMixin:
 
         self._free_temp(carry_flag)
 
-    def _decrement_multi_byte(self, pos):
-        """Decrement 8-byte integer with borrow propagation."""
+    def _decrement_multi_byte(self, pos, size=8):
+        """Decrement multi-byte integer with borrow propagation."""
         borrow_flag = self._allocate_temp(1)
         self._generate_set_value(1, borrow_flag)
 
-        for i in range(8):
+        for i in range(size):
             self._move_pointer(borrow_flag)
             self.bf_code.append('[')
             self.bf_code.append('-')
@@ -883,18 +865,138 @@ class ArithOpsMixin:
 
         self._free_temp(borrow_flag)
 
-    def _sum_bytes_to_check_zero(self, pos, sum_pos, size):
-        """Sum bytes to check if all are zero (non-destructive)."""
-        self._generate_clear(sum_pos)
-        temp_block = self._allocate_temp(size)
-        self._copy_block(pos, temp_block, size)
-
+    def _divmod10_multi_byte(self, pos_in, pos_quotient, rem_pos, size=8):
+        """
+        Perform (quotient, remainder) = value // 10, value % 10 for multi-byte.
+        Algorithm: standard long division by 10.
+        """
+        # Clear quotient and remainder
         for i in range(size):
-            self._move_pointer(temp_block + i)
+            self._generate_clear(pos_quotient + i)
+        self._generate_clear(rem_pos)
+        
+        # We need a temporary copy of the input because we process it byte-by-byte
+        temp_val = self._allocate_temp(size)
+        self._copy_block(pos_in, temp_val, size)
+        
+        # Process from MSB to LSB
+        for i in reversed(range(size)):
+            # rem = (rem * 256) + current_byte
+            # In BF, we can think of this as adding current_byte to rem,
+            # then for each unit in rem, we'd add 256 to next... wait.
+            # Simpler: 
+            # while temp_val[i] > 0:
+            #   temp_val[i]--, rem++
+            #   if rem == 10: rem=0, quotient[i]++
+            # This is not quite right for long division.
+            
+            # Correct long division step:
+            # For each byte i:
+            #   remainder = (remainder << 8) | current_byte
+            #   quotient[i] = remainder / 10
+            #   remainder = remainder % 10
+            
+            # Implementation:
+            # 1. Transfer current byte to a 16-bit intermediate (high=rem, low=temp_val[i])
+            # 2. Repeatedly subtract 10 from this 16-bit value, incrementing pos_quotient[i]
+            
+            # Since rem < 10, (rem * 256 + byte) < 2560 + 256 = 2816.
+            # This fits in 16 bits.
+            
+            # We already have rem in rem_pos (0..9).
+            # We have temp_val[i] (0..255).
+            
+            # While temp_val[i] > 0 or rem > 0:
+            #   if we can subtract 10 from (rem, temp_val[i]):
+            #     do it, quotient[i]++
+            
+            loop_flag = self._allocate_temp(1)
+            self._generate_set_value(1, loop_flag)
+            
+            self._move_pointer(loop_flag)
             self.bf_code.append('[')
-            self._move_pointer(sum_pos)
-            self.bf_code.append('+')
-            self._move_pointer(temp_block + i)
-            self.bf_code.append('-]')
+            
+            # Can we subtract 10?
+            # ge10 if rem > 0 or temp_val[i] >= 10
+            ge10 = self._allocate_temp(1)
+            self._generate_clear(ge10)
+            self._generate_if_nonzero(rem_pos, lambda: self._generate_set_value(1, ge10))
+            
+            low_ge10 = self._allocate_temp(1)
+            self._generate_clear(low_ge10)
+            for v in range(10, 256):
+                self._generate_if_byte_equals(temp_val + i, v, lambda: self._generate_set_value(1, low_ge10))
+            
+            self._generate_if_nonzero(low_ge10, lambda: self._generate_set_value(1, ge10))
+            self._free_temp(low_ge10)
+            
+            def _sub10():
+                self._move_pointer(pos_quotient + i)
+                self.bf_code.append('+')
+                # subtract 10 from 16-bit (rem, temp_val[i])
+                low_ge10_inner = self._allocate_temp(1)
+                self._generate_clear(low_ge10_inner)
+                for v in range(10, 256):
+                    self._generate_if_byte_equals(temp_val + i, v, lambda: self._generate_set_value(1, low_ge10_inner))
+                
+                def _low_ge():
+                    self._move_pointer(temp_val + i)
+                    self.bf_code.append('----------')
+                def _low_lt():
+                    # borrow from rem
+                    self._move_pointer(rem_pos)
+                    self.bf_code.append('-')
+                    self._move_pointer(temp_val + i)
+                    self.bf_code.append('+' * 246) # +256 - 10
+                
+                self._generate_if_nonzero(low_ge10_inner, _low_ge)
+                
+                inv = self._allocate_temp(1)
+                self._generate_set_value(1, inv)
+                self._move_pointer(low_ge10_inner)
+                self.bf_code.append('[')
+                self._move_pointer(inv)
+                self.bf_code.append('-')
+                self._generate_clear(low_ge10_inner)
+                self.bf_code.append(']')
+                self._generate_if_nonzero(inv, _low_lt)
+                self._free_temp(inv)
+                self._free_temp(low_ge10_inner)
 
-        self._free_temp(temp_block)
+            self._generate_if_nonzero(ge10, _sub10)
+            
+            # if not ge10: clear loop_flag
+            inv_ge10 = self._allocate_temp(1)
+            self._generate_set_value(1, inv_ge10)
+            self._move_pointer(ge10)
+            self.bf_code.append('[')
+            self._move_pointer(inv_ge10)
+            self.bf_code.append('-')
+            self._generate_clear(ge10)
+            self.bf_code.append(']')
+            self._move_pointer(inv_ge10)
+            self.bf_code.append('[')
+            self._generate_clear(loop_flag)
+            self._generate_clear(inv_ge10)
+            self.bf_code.append(']')
+            self._free_temp(inv_ge10)
+            self._free_temp(ge10)
+            
+            self._move_pointer(loop_flag)
+            self.bf_code.append(']')
+            self._free_temp(loop_flag)
+            
+            # The remaining value in temp_val[i] IS the new rem for next iteration if we were doing bits,
+            # but here it's just the remainder of this byte division.
+            # Wait, the long division step is:
+            # new_rem = (old_rem * 256 + current_byte) % 10
+            # We already have this! It's whatever is left in temp_val[i] after the loop.
+            self._move_pointer(temp_val + i)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._move_pointer(rem_pos)
+            self.bf_code.append('+')
+            self._move_pointer(temp_val + i)
+            self.bf_code.append(']')
+            
+        self._free_temp(temp_val)

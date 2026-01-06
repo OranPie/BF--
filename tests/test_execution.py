@@ -464,6 +464,67 @@ def test_float_add_sub_and_conversion():
     print(f"✗ float add/sub + conversion failed. Output: {output}, Error: {error}")
     return False
 
+
+def test_int16_arithmetic_and_io():
+    print("\nTesting int16 arithmetic and I/O...")
+
+    code = """
+    declare int16 a
+    declare int16 b
+    set 1000 on a
+    set 2000 on b
+    declare int16 c
+    set $a + $b on c
+    varout c
+    print string " "
+    set $c - 500 on c
+    varout c
+    """
+
+    compiler = BrainFuckPlusPlusCompiler()
+    bf_code = compiler.compile(code)
+    output, error = execute_bf_code_inprocess(bf_code)
+
+    if output.strip() == "3000 2500":
+        print("✓ int16 arithmetic and I/O works")
+        return True
+    print(f"✗ int16 arithmetic and I/O failed. Output: {output}, Error: {error}")
+    return False
+
+
+def test_int16_comparisons():
+    print("\nTesting int16 comparisons...")
+
+    code = """
+    declare int16 a
+    declare int16 b
+    set 1000 on a
+    set 2000 on b
+
+    if (a < b) {
+        print string "LT "
+    }
+    if (b > a) {
+        print string "GT "
+    }
+    if (a == 1000) {
+        print string "EQ "
+    }
+    if (b != 1000) {
+        print string "NE"
+    }
+    """
+
+    compiler = BrainFuckPlusPlusCompiler()
+    bf_code = compiler.compile(code)
+    output, error = execute_bf_code_inprocess(bf_code)
+
+    if output.strip() == "LT GT EQ NE":
+        print("✓ int16 comparisons work")
+        return True
+    print(f"✗ int16 comparisons failed. Output: {output}, Error: {error}")
+    return False
+
 def main():
     print("=== BF++ Execution Test ===\n")
     
@@ -485,6 +546,8 @@ def main():
         test_inputfloat_on_float,
         test_varout_float_format,
         test_float_add_sub_and_conversion,
+        test_int16_arithmetic_and_io,
+        test_int16_comparisons,
     ]
     
     all_passed = True

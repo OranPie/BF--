@@ -150,8 +150,9 @@ class IOMixin:
                 if base_info['type'] in ('byte', 'char'):
                     self._move_pointer(pos)
                     self.bf_code.append(',')
-                elif base_info['type'] == 'int':
-                    for j in range(8):
+                elif base_info['type'] in ('int', 'int16', 'int64'):
+                    elem_size = base_info['elem_size']
+                    for j in range(elem_size):
                         self._generate_clear(pos + j)
                     self._move_pointer(pos)
                     self.bf_code.append(',')
@@ -171,8 +172,9 @@ class IOMixin:
             self.bf_code.append(',')
             return
 
-        if var_info['type'] == 'int':
-            for i in range(8):
+        if var_info['type'] in ('int', 'int16', 'int64'):
+            elem_size = var_info['elem_size']
+            for i in range(elem_size):
                 self._generate_clear(var_info['pos'] + i)
             self._move_pointer(var_info['pos'])
             self.bf_code.append(',')
@@ -190,10 +192,11 @@ class IOMixin:
 
         var_ref = tokens[0]
         var_info = self._resolve_var(var_ref)
-        if var_info['type'] != 'int' or var_info['size'] != 8:
-            raise NotImplementedError("inputint currently supports only 8-byte int variables")
+        if var_info['type'] not in ('int', 'int16', 'int64'):
+            raise NotImplementedError("inputint supports only int/int16/int64 variables")
 
         dest = var_info['pos']
+        elem_size = var_info['elem_size']
 
         # Temporary cells (bytes)
         c = self._allocate_temp()          # current char
@@ -282,17 +285,17 @@ class IOMixin:
         self.bf_code.append(']')
 
         # Store into destination int (little-endian). Clear whole int first.
-        for i in range(8):
+        for i in range(elem_size):
             self._generate_clear(dest + i)
         self._add_cell(value, dest, tmp)
 
         # Apply sign (two's complement) if needed.
         def _apply_sign():
-            tmp_block = self._allocate_temp(8)
-            self._copy_block(dest, tmp_block, 8)
-            self._perform_bitwise_not(tmp_block, dest)
+            tmp_block = self._allocate_temp(elem_size)
+            self._copy_block(dest, tmp_block, elem_size)
+            self._perform_bitwise_not(tmp_block, dest, size=elem_size)
             self._free_temp(tmp_block)
-            self._increment_multi_byte(dest)
+            self._increment_multi_byte(dest, size=elem_size)
 
         self._generate_if_nonzero(sign, _apply_sign)
 
@@ -574,8 +577,8 @@ class IOMixin:
                 if base_info['type'] in ('byte', 'char'):
                     self._move_pointer(pos)
                     self.bf_code.append('.')
-                elif base_info['type'] == 'int':
-                    self._output_int_as_decimal(pos)
+                elif base_info['type'] in ('int', 'int16', 'int64'):
+                    self._output_int_as_decimal(pos, size=base_info['elem_size'])
                 elif base_info['type'] in ('float', 'float64'):
                     self._output_float_as_decimal_1000(pos)
                 elif base_info['type'] == 'string':
@@ -606,11 +609,11 @@ class IOMixin:
                     self._output_literal(end_token)
                 return
 
-            if var_info['type'] == 'int':
+            if var_info['type'] in ('int', 'int16', 'int64'):
                 if sep_token is None:
                     sep_token = '32'
                 for i in range(length):
-                    self._output_int_as_decimal(var_info['pos'] + i * elem_size)
+                    self._output_int_as_decimal(var_info['pos'] + i * elem_size, size=elem_size)
                     if i != length - 1 and sep_token is not None:
                         self._output_literal(sep_token)
                 if end_token is not None:
@@ -646,8 +649,8 @@ class IOMixin:
             if end_token is not None:
                 self._output_literal(end_token)
 
-        elif var_info['type'] == 'int':
-            self._output_int_as_decimal(var_info['pos'])
+        elif var_info['type'] in ('int', 'int16', 'int64'):
+            self._output_int_as_decimal(var_info['pos'], size=var_info['elem_size'])
             if end_token is not None:
                 self._output_literal(end_token)
 
@@ -665,146 +668,140 @@ class IOMixin:
         else:
             raise NotImplementedError(f"varout not implemented for type {var_info['type']}")
 
-    def _output_int_as_decimal(self, pos):
-        # Deterministic small-int output for debugging.
-        msb = pos + 7
-        is_neg = self._allocate_temp()
+    def _output_int_as_decimal(self, pos, size=8):
+        """Robust multi-byte decimal output using long division by 10."""
+        msb = pos + (size - 1)
+        is_neg = self._allocate_temp(1)
         self._generate_clear(is_neg)
-        self._generate_if_byte_equals(msb, 255, lambda: self._generate_set_value(1, is_neg))
-
-        mag = self._allocate_temp()
-        scratch = self._allocate_temp()
-        self._generate_clear(scratch)
-        self._generate_clear(mag)
-
-        def _set_mag_positive():
-            self._copy_cell(pos, mag, scratch)
-
-        def _set_mag_negative_and_print_sign():
+        # Check sign bit of MSB (little-endian signed int)
+        # For simplicity, we check if MSB >= 128
+        flag_ge128 = self._allocate_temp(1)
+        self._generate_clear(flag_ge128)
+        for v in range(128, 256):
+            self._generate_if_byte_equals(msb, v, lambda: self._generate_set_value(1, flag_ge128))
+        self._generate_if_nonzero(flag_ge128, lambda: self._generate_set_value(1, is_neg))
+        self._free_temp(flag_ge128)
+        
+        # Working copy for magnitude
+        mag = self._allocate_temp(size)
+        self._copy_block(pos, mag, size)
+        
+        def _apply_abs():
             self._output_literal('"-"')
-            tmp = self._allocate_temp()
-            self._copy_cell(pos, tmp, scratch)
-            self._move_pointer(tmp)
-            self.bf_code.append('[')
-            self._move_pointer(mag)
-            self.bf_code.append('-')
-            self._move_pointer(tmp)
-            self.bf_code.append('-]')
-            self._free_temp(tmp)
-
-        self._generate_if_nonzero(is_neg, _set_mag_negative_and_print_sign)
-
-        inv_neg = self._allocate_temp()
-        self._generate_set_value(1, inv_neg)
-        self._move_pointer(is_neg)
+            # Two's complement: NOT + INC
+            tmp_not = self._allocate_temp(size)
+            self._perform_bitwise_not(mag, tmp_not, size=size)
+            self._copy_block(tmp_not, mag, size)
+            self._free_temp(tmp_not)
+            self._increment_multi_byte(mag, size=size)
+            
+        self._generate_if_nonzero(is_neg, _apply_abs)
+        
+        # Decimal digits extraction using repeated division by 10
+        # We'll store digits in a temp buffer (max 20 digits for 64-bit)
+        digits = self._allocate_temp(20)
+        num_digits = self._allocate_temp(1)
+        self._generate_clear(num_digits)
+        for i in range(20):
+            self._generate_clear(digits + i)
+            
+        # Loop until mag is zero
+        loop_flag = self._allocate_temp(1)
+        self._generate_set_value(1, loop_flag)
+        
+        self._move_pointer(loop_flag)
         self.bf_code.append('[')
-        self._move_pointer(inv_neg)
-        self.bf_code.append('-')
-        self._move_pointer(is_neg)
-        self.bf_code.append('-]')
-        self._move_pointer(inv_neg)
-        self.bf_code.append('[')
-        _set_mag_positive()
-        self._generate_clear(inv_neg)
-        self.bf_code.append(']')
-        self._free_temp(inv_neg)
-
-        counter = self._allocate_temp()
-        self._generate_clear(scratch)
-        self._copy_cell(mag, counter, scratch)
-
-        ones = self._allocate_temp()
-        tens = self._allocate_temp()
-        hundreds = self._allocate_temp()
-        self._generate_clear(ones)
-        self._generate_clear(tens)
-        self._generate_clear(hundreds)
-
-        self._move_pointer(counter)
-        self.bf_code.append('[')
-        self.bf_code.append('-')
-
-        self._move_pointer(ones)
+        
+        # quotient = mag // 10, rem = mag % 10
+        quotient = self._allocate_temp(size)
+        rem = self._allocate_temp(1)
+        self._divmod10_multi_byte(mag, quotient, rem, size=size)
+        
+        # Save remainder digit
+        # We need to store rem at digits[num_digits]
+        def _store_digit(pos_in_digits, slot_idx):
+            scr = self._allocate_temp(1)
+            self._copy_cell(rem, pos_in_digits, scr)
+            self._free_temp(scr)
+            
+        self._apply_runtime_subscript_op_pos({'pos': digits, 'length': 20, 'elem_size': 1}, num_digits, _store_digit)
+        
+        # num_digits++
+        self._move_pointer(num_digits)
         self.bf_code.append('+')
-
-        def _roll_tens():
-            self._generate_clear(tens)
-            self._move_pointer(hundreds)
-            self.bf_code.append('+')
-
-        def _roll_ones():
-            self._generate_clear(ones)
-            self._move_pointer(tens)
-            self.bf_code.append('+')
-            self._generate_if_byte_equals(tens, 10, _roll_tens)
-
-        self._generate_if_byte_equals(ones, 10, _roll_ones)
-
-        self._move_pointer(counter)
-        self.bf_code.append(']')
-
-        out = self._allocate_temp()
-        tmp = self._allocate_temp()
-
-        def _emit_digit(dpos):
-            self._generate_set_value(48, out)
-            scr2 = self._allocate_temp()
-            self._generate_clear(scr2)
-            self._copy_cell(dpos, tmp, scr2)
-            self._move_pointer(tmp)
-            self.bf_code.append('[')
-            self._move_pointer(out)
-            self.bf_code.append('+')
-            self._move_pointer(tmp)
-            self.bf_code.append('-]')
-            self._move_pointer(out)
-            self.bf_code.append('.')
-            self._generate_clear(out)
-            self._free_temp(scr2)
-
-        started = self._allocate_temp()
-        self._generate_clear(started)
-
-        def _start_and_emit_hundreds():
-            _emit_digit(hundreds)
-            self._generate_set_value(1, started)
-
-        def _start_and_emit_tens():
-            _emit_digit(tens)
-            self._generate_set_value(1, started)
-
-        self._generate_if_nonzero(hundreds, _start_and_emit_hundreds)
-
-        def _emit_tens_when_started():
-            _emit_digit(tens)
-
-        self._generate_if_nonzero(started, _emit_tens_when_started)
-
-        inv_started = self._allocate_temp()
-        self._generate_set_value(1, inv_started)
-        self._move_pointer(started)
+        
+        # mag = quotient
+        self._copy_block(quotient, mag, size)
+        
+        # Check if mag is zero
+        mag_is_nonzero = self._allocate_temp(1)
+        self._generate_clear(mag_is_nonzero)
+        for i in range(size):
+            self._generate_if_nonzero(mag + i, lambda: self._generate_set_value(1, mag_is_nonzero))
+            
+        # if mag_is_zero: loop_flag = 0
+        inv = self._allocate_temp(1)
+        self._generate_set_value(1, inv)
+        self._move_pointer(mag_is_nonzero)
         self.bf_code.append('[')
-        self._move_pointer(inv_started)
+        self._move_pointer(inv)
         self.bf_code.append('-')
-        self._move_pointer(started)
-        self.bf_code.append('-]')
-        self._move_pointer(inv_started)
-        self.bf_code.append('[')
-        self._generate_if_nonzero(tens, _start_and_emit_tens)
-        self._generate_clear(inv_started)
+        self._generate_clear(mag_is_nonzero)
         self.bf_code.append(']')
-        self._free_temp(inv_started)
-
-        _emit_digit(ones)
-
-        self._free_temp(started)
-        self._free_temp(tmp)
-        self._free_temp(out)
-        self._free_temp(hundreds)
-        self._free_temp(tens)
-        self._free_temp(ones)
-        self._free_temp(counter)
-        self._free_temp(scratch)
+        
+        self._move_pointer(inv)
+        self.bf_code.append('[')
+        self._generate_clear(loop_flag)
+        self._generate_clear(inv)
+        self.bf_code.append(']')
+        
+        self._free_temp(inv)
+        self._free_temp(mag_is_nonzero)
+        self._free_temp(rem)
+        self._free_temp(quotient)
+        
+        self._move_pointer(loop_flag)
+        self.bf_code.append(']')
+        self._free_temp(loop_flag)
+        
+        # Output digits in reverse order
+        # If num_digits was 0 (shouldn't happen with our loop), output '0'
+        is_zero = self._allocate_temp(1)
+        self._generate_set_value(1, is_zero)
+        self._generate_if_nonzero(num_digits, lambda: self._generate_clear(is_zero))
+        self._generate_if_nonzero(is_zero, lambda: self._output_literal('"0"'))
+        self._free_temp(is_zero)
+        
+        # for i from num_digits-1 down to 0
+        idx = self._allocate_temp(1)
+        idx_scr = self._allocate_temp(1)
+        self._copy_cell(num_digits, idx, idx_scr)
+        self._free_temp(idx_scr)
+        
+        self._move_pointer(idx)
+        self.bf_code.append('[')
+        self.bf_code.append('-')
+        
+        def _output_digit(pos_in_digits, slot_idx):
+            # output *pos_in_digits + 48
+            temp_out = self._allocate_temp(1)
+            self._generate_set_value(48, temp_out)
+            scr = self._allocate_temp(1)
+            self._add_cell(pos_in_digits, temp_out, scr)
+            self._free_temp(scr)
+            self._move_pointer(temp_out)
+            self.bf_code.append('.')
+            self._generate_clear(temp_out)
+            self._free_temp(temp_out)
+            
+        self._apply_runtime_subscript_op_pos({'pos': digits, 'length': 20, 'elem_size': 1}, idx, _output_digit)
+        
+        self._move_pointer(idx)
+        self.bf_code.append(']')
+        
+        self._free_temp(idx)
+        self._free_temp(num_digits)
+        self._free_temp(digits)
         self._free_temp(mag)
         self._free_temp(is_neg)
 

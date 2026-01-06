@@ -401,39 +401,35 @@ class BrainFuckPlusPlusCompiler(
         """Parse expression tokens into operands and operator."""
         return super()._parse_expression(tokens)
 
-    def _load_operand(self, operand, target_pos):
+    def _load_operand(self, operand, target_pos, size=8):
         """Load a variable or literal into memory position."""
-        return super()._load_operand(operand, target_pos)
+        return super()._load_operand(operand, target_pos, size=size)
 
-    def _perform_bitwise_and(self, pos_a, pos_b, pos_result):
-        """Perform bytewise AND on two 8-byte integers."""
-        return super()._perform_bitwise_and(pos_a, pos_b, pos_result)
+    def _perform_bitwise_and(self, pos_a, pos_b, pos_result, size=8):
+        """Perform bytewise AND on two multi-byte integers."""
+        return super()._perform_bitwise_and(pos_a, pos_b, pos_result, size=size)
 
-    def _perform_bitwise_or(self, pos_a, pos_b, pos_result):
-        """Perform bytewise OR on two 8-byte integers."""
-        return super()._perform_bitwise_or(pos_a, pos_b, pos_result)
+    def _perform_bitwise_or(self, pos_a, pos_b, pos_result, size=8):
+        """Perform bytewise OR on two multi-byte integers."""
+        return super()._perform_bitwise_or(pos_a, pos_b, pos_result, size=size)
 
-    def _perform_bitwise_xor(self, pos_a, pos_b, pos_result):
-        """Perform bytewise XOR on two 8-byte integers."""
-        return super()._perform_bitwise_xor(pos_a, pos_b, pos_result)
+    def _perform_bitwise_xor(self, pos_a, pos_b, pos_result, size=8):
+        """Perform bytewise XOR on two multi-byte integers."""
+        return super()._perform_bitwise_xor(pos_a, pos_b, pos_result, size=size)
 
-    def _perform_bitwise_not(self, pos_in, pos_result):
+    def _perform_bitwise_not(self, pos_in, pos_result, size=8):
         """
-        Perform bytewise NOT (255 - value) on 8-byte integer.
-
-        BF Code Pattern:
-        - Set result to 255
-        - Subtract input value
+        Perform bytewise NOT (255 - value) on multi-byte integer.
         """
-        return super()._perform_bitwise_not(pos_in, pos_result)
+        return super()._perform_bitwise_not(pos_in, pos_result, size=size)
 
-    def _perform_add(self, pos_a, pos_b, pos_result):
-        """Perform addition on two 8-byte integers."""
-        return super()._perform_add(pos_a, pos_b, pos_result)
+    def _perform_add(self, pos_a, pos_b, pos_result, size=8):
+        """Perform addition on multi-byte integers."""
+        return super()._perform_add(pos_a, pos_b, pos_result, size=size)
 
-    def _perform_sub(self, pos_a, pos_b, pos_result):
-        """Perform subtraction (a - b) on two 8-byte integers."""
-        return super()._perform_sub(pos_a, pos_b, pos_result)
+    def _perform_sub(self, pos_a, pos_b, pos_result, size=8):
+        """Perform subtraction (a - b) on multi-byte integers."""
+        return super()._perform_sub(pos_a, pos_b, pos_result, size=size)
 
     def _perform_mul(self, pos_a, pos_b, pos_result):
         """Perform multiplication using repeated addition (simplified)."""
@@ -557,8 +553,8 @@ class BrainFuckPlusPlusCompiler(
         """
         return super()._handle_varout(tokens)
 
-    def _output_int_as_decimal(self, pos):
-        return super()._output_int_as_decimal(pos)
+    def _output_int_as_decimal(self, pos, size=8):
+        return super()._output_int_as_decimal(pos, size=size)
 
     # ===== Helper Methods =====
 
@@ -566,13 +562,13 @@ class BrainFuckPlusPlusCompiler(
         """Extract tokens between matching parentheses."""
         return super()._extract_parentheses_content(tokens)
 
-    def _increment_multi_byte(self, pos):
-        """Increment 8-byte integer with carry propagation."""
-        return super()._increment_multi_byte(pos)
+    def _increment_multi_byte(self, pos, size=8):
+        """Increment multi-byte integer with carry propagation."""
+        return super()._increment_multi_byte(pos, size=size)
 
-    def _decrement_multi_byte(self, pos):
-        """Decrement 8-byte integer with borrow propagation."""
-        return super()._decrement_multi_byte(pos)
+    def _decrement_multi_byte(self, pos, size=8):
+        """Decrement multi-byte integer with borrow propagation."""
+        return super()._decrement_multi_byte(pos, size=size)
 
     def _sum_bytes_to_check_zero(self, pos, sum_pos, size):
         """Sum bytes to check if all are zero (non-destructive)."""

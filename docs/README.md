@@ -5,6 +5,7 @@
 - `LANGUAGE.md`: BF++ language reference (syntax and semantics as implemented).
 - `API.md`: Public Python API (recommended entry points).
 - `ARCHITECTURE.md`: Compiler architecture and module layout.
+- `PROJECT_STATUS.md`: Current capabilities (NOW) and project-wide TODO.
 - `ERRORS.md`: Error reporting format (preprocess/compile errors with excerpts and hints).
 
 ## Historical / development notes

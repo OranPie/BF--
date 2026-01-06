@@ -59,7 +59,9 @@ class RuntimeOpsMixin:
         if idx_info['size'] != 1:
             raise NotImplementedError("Runtime subscripts require a 1-byte index variable")
 
-        idx_pos = idx_info['pos']
+        self._apply_runtime_subscript_op_pos(base_info, idx_info['pos'], per_slot_fn)
+
+    def _apply_runtime_subscript_op_pos(self, base_info, idx_pos, per_slot_fn):
         length = base_info.get('length', 1)
         elem_size = base_info.get('elem_size', 1)
         base_pos = base_info['pos']
@@ -80,4 +82,7 @@ class RuntimeOpsMixin:
         def _slot_copy(pos, slot):
             self._copy_block(pos, target_pos, size)
 
-        self._apply_runtime_subscript_op(base_info, idx_var, _slot_copy)
+        if isinstance(idx_var, str):
+            self._apply_runtime_subscript_op(base_info, idx_var, _slot_copy)
+        else:
+            self._apply_runtime_subscript_op_pos(base_info, idx_var, _slot_copy)

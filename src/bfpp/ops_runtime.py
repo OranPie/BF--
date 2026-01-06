@@ -38,17 +38,38 @@ class RuntimeOpsMixin:
         self._free_temp(temp_b)
         self._free_temp(temp_a)
 
-    def _generate_if_nonzero(self, pos, body_fn):
+    def _generate_if_nonzero(self, pos, body_fn, body_fn_else=None):
         # Executes body_fn() if *pos != 0 (non-destructive).
+        # Optional body_fn_else() if *pos == 0.
         tmp = self._allocate_temp()
         scratch = self._allocate_temp()
         self._generate_clear(scratch)
         self._copy_cell(pos, tmp, scratch)
-        self._move_pointer(tmp)
-        self.bf_code.append('[')
-        body_fn()
-        self._generate_clear(tmp)
-        self.bf_code.append(']')
+
+        if body_fn_else:
+            else_flag = self._allocate_temp()
+            self._generate_set_value(1, else_flag)
+            
+            self._move_pointer(tmp)
+            self.bf_code.append('[')
+            body_fn()
+            self._generate_clear(else_flag)
+            self._generate_clear(tmp)
+            self.bf_code.append(']')
+            
+            self._move_pointer(else_flag)
+            self.bf_code.append('[')
+            body_fn_else()
+            self._generate_clear(else_flag)
+            self.bf_code.append(']')
+            self._free_temp(else_flag)
+        else:
+            self._move_pointer(tmp)
+            self.bf_code.append('[')
+            body_fn()
+            self._generate_clear(tmp)
+            self.bf_code.append(']')
+
         self._free_temp(scratch)
         self._free_temp(tmp)
 

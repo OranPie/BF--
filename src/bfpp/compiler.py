@@ -505,8 +505,8 @@ class BrainFuckPlusPlusCompiler(
         """
         return super()._evaluate_condition(tokens, flag_pos)
 
-    def _generate_if_nonzero(self, pos, body_fn):
-        return super()._generate_if_nonzero(pos, body_fn)
+    def _generate_if_nonzero(self, pos, body_fn, body_fn_else=None):
+        return super()._generate_if_nonzero(pos, body_fn, body_fn_else=body_fn_else)
 
     def _load_runtime_subscript_into_buffer(self, base_info, idx_var, target_pos, size):
         return super()._load_runtime_subscript_into_buffer(base_info, idx_var, target_pos, size)

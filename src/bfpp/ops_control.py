@@ -465,25 +465,24 @@ class ControlFlowMixin:
 
             temp_a = self._allocate_temp(subj_size)
             temp_b = self._allocate_temp(subj_size)
-            temp_diff = self._allocate_temp(subj_size)
 
             self._copy_block(subj_info['pos'], temp_a, subj_size)
             byte_values = int(value).to_bytes(subj_size, 'little', signed=True)
             for i, byte_val in enumerate(byte_values):
                 self._generate_set_value(byte_val, pos=temp_b + i)
 
-            self._perform_sub(temp_a, temp_b, temp_diff, size=subj_size)
+            is_lt = self._allocate_temp(1)
+            is_gt = self._allocate_temp(1)
+            is_eq = self._allocate_temp(1)
+            
+            self._compare_multi_byte_signed(temp_a, temp_b, subj_size, is_lt, is_gt, is_eq)
+            
+            self._copy_cell(is_eq, flag_pos, self._allocate_temp(1))
+            self._free_temp(self.current_ptr)
 
-            # flag_pos = 1 iff all bytes in temp_diff are 0
-            self._generate_set_value(1, flag_pos)
-            for i in range(subj_size):
-                self._move_pointer(temp_diff + i)
-                self.bf_code.append('[')
-                self._generate_clear(flag_pos)
-                self._generate_clear(temp_diff + i)
-                self.bf_code.append(']')
-
-            self._free_temp(temp_diff)
+            self._free_temp(is_eq)
+            self._free_temp(is_gt)
+            self._free_temp(is_lt)
             self._free_temp(temp_b)
             self._free_temp(temp_a)
 
@@ -554,6 +553,127 @@ class ControlFlowMixin:
 
         self._free_temp(matched)
         return end_line
+
+    def _compare_multi_byte_signed(self, pos_a, pos_b, size, result_lt, result_gt, result_eq):
+        """
+        Performs a signed comparison of two multi-byte integers.
+        Sets result_lt, result_gt, or result_eq to 1 based on the comparison (a < b, a > b, a == b).
+        Algorithm:
+        1. Check signs (MSB bit 7).
+        2. If signs differ, negative is smaller.
+        3. If signs are same, compare bytes from MSB down to LSB as unsigned.
+        """
+        self._generate_clear(result_lt)
+        self._generate_clear(result_gt)
+        self._generate_set_value(1, result_eq)
+
+        msb_a = pos_a + size - 1
+        msb_b = pos_b + size - 1
+
+        sign_a = self._allocate_temp(1)
+        sign_b = self._allocate_temp(1)
+        self._generate_clear(sign_a)
+        self._generate_clear(sign_b)
+
+        # Check MSB >= 128
+        flag_ge128_a = self._allocate_temp(1)
+        flag_ge128_b = self._allocate_temp(1)
+        self._generate_clear(flag_ge128_a)
+        self._generate_clear(flag_ge128_b)
+        for v in range(128, 256):
+            self._generate_if_byte_equals(msb_a, v, lambda: self._generate_set_value(1, flag_ge128_a))
+            self._generate_if_byte_equals(msb_b, v, lambda: self._generate_set_value(1, flag_ge128_b))
+        
+        self._copy_cell(flag_ge128_a, sign_a, self._allocate_temp(1))
+        self._free_temp(self.current_ptr)
+        self._copy_cell(flag_ge128_b, sign_b, self._allocate_temp(1))
+        self._free_temp(self.current_ptr)
+        self._free_temp(flag_ge128_b)
+        self._free_temp(flag_ge128_a)
+
+        # Compare signs
+        # case a < 0, b >= 0 => a < b
+        self._generate_if_nonzero(sign_a, lambda: self._generate_if_nonzero(sign_b, lambda: None, body_fn_else=lambda: (
+            self._generate_set_value(1, result_lt),
+            self._generate_clear(result_eq)
+        )))
+
+        # case a >= 0, b < 0 => a > b
+        inv_sign_a = self._allocate_temp(1)
+        self._generate_set_value(1, inv_sign_a)
+        self._generate_if_nonzero(sign_a, lambda: self._generate_clear(inv_sign_a))
+        
+        self._generate_if_nonzero(inv_sign_a, lambda: self._generate_if_nonzero(sign_b, lambda: (
+            self._generate_set_value(1, result_gt),
+            self._generate_clear(result_eq)
+        )))
+        self._free_temp(inv_sign_a)
+
+        # If signs are same, compare magnitude
+        # We'll use a stop flag to exit early once a difference is found.
+        stop = self._allocate_temp(1)
+        self._generate_clear(stop)
+        
+        # We only proceed if result_eq is still 1 (meaning signs were same)
+        self._move_pointer(result_eq)
+        self.bf_code.append('[')
+        
+        for i in reversed(range(size)):
+            # if not stop:
+            inv_stop = self._allocate_temp(1)
+            self._generate_set_value(1, inv_stop)
+            self._generate_if_nonzero(stop, lambda: self._generate_clear(inv_stop))
+            
+            def _compare_byte(idx=i):
+                byte_a = self._allocate_temp(1)
+                byte_b = self._allocate_temp(1)
+                scr = self._allocate_temp(1)
+                self._copy_cell(pos_a + idx, byte_a, scr)
+                self._copy_cell(pos_b + idx, byte_b, scr)
+                self._free_temp(scr)
+                
+                # Unsigned byte comparison: while a > 0 and b > 0: a--, b--
+                self._move_pointer(byte_a)
+                self.bf_code.append('[')
+                self._move_pointer(byte_b)
+                self.bf_code.append('[')
+                self._move_pointer(byte_a)
+                self.bf_code.append('-')
+                self._move_pointer(byte_b)
+                self.bf_code.append('-')
+                self.bf_code.append(']')
+                self.bf_code.append('[') # if b still > 0, clear both
+                self._generate_clear(byte_a)
+                self._generate_clear(byte_b)
+                self.bf_code.append(']')
+                self._move_pointer(byte_a)
+                self.bf_code.append(']')
+                
+                # If a > 0 => a > b
+                self._generate_if_nonzero(byte_a, lambda: (
+                    self._generate_set_value(1, result_gt),
+                    self._generate_clear(result_eq),
+                    self._generate_set_value(1, stop)
+                ))
+                # If b > 0 => a < b
+                self._generate_if_nonzero(byte_b, lambda: (
+                    self._generate_set_value(1, result_lt),
+                    self._generate_clear(result_eq),
+                    self._generate_set_value(1, stop)
+                ))
+                
+                self._free_temp(byte_b)
+                self._free_temp(byte_a)
+
+            self._generate_if_nonzero(inv_stop, _compare_byte)
+            self._free_temp(inv_stop)
+            
+        self._move_pointer(result_eq)
+        self.bf_code.append(']') # Close result_eq check (if signs were different, eq is 0)
+
+        self._free_temp(stop)
+        self._free_temp(sign_b)
+        self._free_temp(sign_a)
 
     def _evaluate_condition(self, tokens, flag_pos):
         self._generate_clear(flag_pos)
@@ -672,7 +792,6 @@ class ControlFlowMixin:
             if op in ('==', '!=', '<', '>', '<=', '>='):
                 temp_a = self._allocate_temp(comp_size)
                 temp_b = self._allocate_temp(comp_size)
-                temp_diff = self._allocate_temp(comp_size)
 
                 self._copy_block(var_pos, temp_a, comp_size)
 
@@ -683,127 +802,40 @@ class ControlFlowMixin:
                     for i, byte_val in enumerate(byte_values):
                         self._generate_set_value(byte_val, pos=temp_b + i)
 
-                self._perform_sub(temp_a, temp_b, temp_diff, size=comp_size)
+                is_lt = self._allocate_temp(1)
+                is_gt = self._allocate_temp(1)
+                is_eq = self._allocate_temp(1)
+                
+                self._compare_multi_byte_signed(temp_a, temp_b, comp_size, is_lt, is_gt, is_eq)
 
-                is_negative = self._allocate_temp()
-                self._generate_set_value(1, is_negative)
-
-                test = self._allocate_temp()
-                temp_val = self._allocate_temp()
-                scr = self._allocate_temp()
-                self._copy_cell(temp_diff + comp_size - 1, test, scr)
-                self._generate_set_value(128, temp_val)
-                self._move_pointer(test)
-                self.bf_code.append('['
-                                    '>'
-                                    '['
-                                    '-<->'
-                                    ']'
-                                    '<[-]>'
-                                    '<'
-                                    ']')
-                self._move_pointer(temp_val)
-                self.bf_code.append('[')
-                self._generate_clear(is_negative)
-                self._generate_clear(temp_val)
-                self.bf_code.append(']')
-                self._free_temp(scr)
-                self._free_temp(temp_val)
-                self._free_temp(test)
-
-                is_zero = self._allocate_temp()
-                self._generate_set_value(1, is_zero)
-                for i in range(comp_size):
-                    self._move_pointer(temp_diff + i)
-                    self.bf_code.append('[')
-                    self._generate_clear(is_zero)
-                    self._generate_clear(temp_diff + i)
-                    self.bf_code.append(']')
-
-                if op in ('==', '!='):
-                    # Legacy behavior (kept for backward compatibility with existing tests)
-                    is_equal = self._allocate_temp()
-                    self._generate_set_value(1, is_equal)
-                    self._move_pointer(is_zero)
-                    self.bf_code.append('[')
-                    self._move_pointer(is_equal)
-                    self.bf_code.append('+')
-                    self._move_pointer(is_zero)
-                    self.bf_code.append('-]')
-
-                    if op == '==':
-                        self._move_pointer(is_equal)
-                        self.bf_code.append('[')
-                        self._move_pointer(flag_pos)
-                        self.bf_code.append('+')
-                        self._move_pointer(is_equal)
-                        self.bf_code.append('-]')
-                        self._move_pointer(flag_pos)
-                    else:
-                        self._generate_set_value(1, flag_pos)
-                        self._move_pointer(is_equal)
-                        self.bf_code.append('[')
-                        self._move_pointer(flag_pos)
-                        self.bf_code.append('-')
-                        self._move_pointer(is_equal)
-                        self.bf_code.append('-]')
-                        self._move_pointer(flag_pos)
-
-                    self._free_temp(is_equal)
-
+                if op == '==':
+                    self._copy_cell(is_eq, flag_pos, self._allocate_temp(1))
+                    self._free_temp(self.current_ptr)
+                elif op == '!=':
+                    inv_eq = self._allocate_temp(1)
+                    self._generate_set_value(1, inv_eq)
+                    self._generate_if_nonzero(is_eq, lambda: self._generate_clear(inv_eq))
+                    self._copy_cell(inv_eq, flag_pos, self._allocate_temp(1))
+                    self._free_temp(self.current_ptr)
+                    self._free_temp(inv_eq)
                 elif op == '<':
-                    self._move_pointer(is_negative)
-                    self.bf_code.append('[')
-                    self._move_pointer(flag_pos)
-                    self.bf_code.append('+')
-                    self._move_pointer(is_negative)
-                    self.bf_code.append('-]')
-                    self._move_pointer(flag_pos)
-
+                    self._copy_cell(is_lt, flag_pos, self._allocate_temp(1))
+                    self._free_temp(self.current_ptr)
                 elif op == '>':
-                    self._generate_set_value(1, flag_pos)
-                    self._move_pointer(is_negative)
-                    self.bf_code.append('[')
-                    self._move_pointer(flag_pos)
-                    self.bf_code.append('-')
-                    self._move_pointer(is_negative)
-                    self.bf_code.append('-]')
-                    self._move_pointer(is_zero)
-                    self.bf_code.append('[')
-                    self._move_pointer(flag_pos)
-                    self.bf_code.append('-')
-                    self._move_pointer(is_zero)
-                    self.bf_code.append('-]')
-                    self._move_pointer(flag_pos)
-
+                    self._copy_cell(is_gt, flag_pos, self._allocate_temp(1))
+                    self._free_temp(self.current_ptr)
                 elif op == '<=':
-                    self._move_pointer(is_negative)
-                    self.bf_code.append('[')
-                    self._move_pointer(flag_pos)
-                    self.bf_code.append('+')
-                    self._move_pointer(is_negative)
-                    self.bf_code.append('-]')
-                    self._move_pointer(is_zero)
-                    self.bf_code.append('[')
-                    self._move_pointer(flag_pos)
-                    self.bf_code.append('+')
-                    self._move_pointer(is_zero)
-                    self.bf_code.append('-]')
-                    self._move_pointer(flag_pos)
+                    self._copy_cell(is_lt, flag_pos, self._allocate_temp(1))
+                    self._free_temp(self.current_ptr)
+                    self._generate_if_nonzero(is_eq, lambda: self._generate_set_value(1, flag_pos))
+                elif op == '>=':
+                    self._copy_cell(is_gt, flag_pos, self._allocate_temp(1))
+                    self._free_temp(self.current_ptr)
+                    self._generate_if_nonzero(is_eq, lambda: self._generate_set_value(1, flag_pos))
 
-                else:  # >=
-                    self._generate_set_value(1, flag_pos)
-                    self._move_pointer(is_negative)
-                    self.bf_code.append('[')
-                    self._move_pointer(flag_pos)
-                    self.bf_code.append('-')
-                    self._move_pointer(is_negative)
-                    self.bf_code.append('-]')
-                    self._move_pointer(flag_pos)
-
-                self._free_temp(is_zero)
-                self._free_temp(is_negative)
-                self._free_temp(temp_diff)
+                self._free_temp(is_eq)
+                self._free_temp(is_gt)
+                self._free_temp(is_lt)
                 self._free_temp(temp_b)
                 self._free_temp(temp_a)
             else:

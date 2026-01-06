@@ -355,17 +355,11 @@ class ArithOpsMixin:
         elif op == '-':
             self._perform_sub(temp_left, temp_right, dest_info['pos'], size=dest_size)
         elif op == '*':
-            if dest_size != 8:
-                raise NotImplementedError("Multiplication only supported for 8-byte integers currently")
-            self._perform_mul(temp_left, temp_right, dest_info['pos'])
+            self._perform_mul(temp_left, temp_right, dest_info['pos'], size=dest_size)
         elif op == '/':
-            if dest_size != 8:
-                raise NotImplementedError("Division only supported for 8-byte integers currently")
-            self._perform_div(temp_left, temp_right, dest_info['pos'])
+            self._perform_div(temp_left, temp_right, dest_info['pos'], size=dest_size)
         elif op == '%':
-            if dest_size != 8:
-                raise NotImplementedError("Modulo only supported for 8-byte integers currently")
-            self._perform_mod(temp_left, temp_right, dest_info['pos'])
+            self._perform_mod(temp_left, temp_right, dest_info['pos'], size=dest_size)
         else:
             raise NotImplementedError(f"Operator '{op}' not implemented")
 
@@ -385,7 +379,9 @@ class ArithOpsMixin:
 
     def _load_operand(self, operand, target_pos, size=8):
         """Load a variable or literal into memory position."""
+        is_var = operand.startswith('$') or operand in self.variables
         op = operand[1:] if operand.startswith('$') else operand
+        
         runtime = self._split_runtime_subscript_ref(op)
         if runtime is not None:
             base_name, idx_var = runtime
@@ -395,14 +391,18 @@ class ArithOpsMixin:
             self._load_runtime_subscript_into_buffer(base_info, idx_var, target_pos, size)
             return
 
-        if operand.startswith('$'):
+        if is_var:
             var_info = self._resolve_var(operand)
             if var_info['type'] not in ('int', 'int16', 'int64') or var_info['size'] != size:
-                raise NotImplementedError(f"Expression operands currently support only {size}-byte int variables")
+                raise NotImplementedError(f"Expression operands currently support only {size}-byte int variables (got {var_info['type']} size {var_info['size']}, expected {size})")
             self._copy_block(var_info['pos'], target_pos, size)
             return
 
-        value = int(operand)
+        try:
+            value = int(operand)
+        except ValueError:
+            raise ValueError(f"Invalid operand: {operand} (not a variable or integer literal)")
+            
         byte_values = value.to_bytes(size, 'little', signed=True)
         for i, byte_val in enumerate(byte_values):
             self._generate_set_value(byte_val, pos=target_pos + i)
@@ -483,134 +483,341 @@ class ArithOpsMixin:
             
         self._free_temp(temp_b)
 
-    def _perform_mul(self, pos_a, pos_b, pos_result):
-        """Perform multiplication using repeated addition (simplified)."""
-        temp_result = self._allocate_temp(8)
-        temp_counter = self._allocate_temp(8)
-
-        # Clear result
-        for i in range(8):
-            self._generate_clear(pos_result + i)
-            self._generate_clear(temp_result + i)
-            self._generate_clear(temp_counter + i)
-
-        # Copy B to counter
-        self._copy_block(pos_b, temp_counter, 8)
-
-        # Add A to result B times (simplified - only works for small positive numbers)
-        self._move_pointer(temp_counter)
+    def _perform_mul(self, pos_a, pos_b, pos_result, size=8):
+        """Perform multiplication on multi-byte integers using bit-shifting (Russian Peasant)."""
+        # result = 0
+        # while b > 0:
+        #   if b is odd: result += a
+        #   a <<= 1
+        #   b >>= 1
+        
+        self._generate_clear_block(pos_result, size)
+        
+        temp_a = self._allocate_temp(size)
+        temp_b = self._allocate_temp(size)
+        self._copy_block(pos_a, temp_a, size)
+        self._copy_block(pos_b, temp_b, size)
+        
+        loop_flag = self._allocate_temp(1)
+        self._generate_set_value(1, loop_flag)
+        
+        self._move_pointer(loop_flag)
         self.bf_code.append('[')
-
-        # Add A to result
-        for i in range(8):
-            self._copy_cell(pos_a + i, temp_result + i, self._allocate_temp())
-            self._free_temp(self.current_ptr)
-
-        # Decrement counter
-        for i in range(8):
-            self._move_pointer(temp_counter + i)
-            self.bf_code.append('[')
-            self.bf_code.append('-')
-            self._move_pointer(temp_counter + i)
-            self.bf_code.append('-]')
-
+        
+        # Check if b is odd (LSB & 1)
+        is_odd = self._allocate_temp(1)
+        self._generate_clear(is_odd)
+        # We only need bit 0 of temp_b[0]
+        bit0 = self._allocate_temp(1)
+        self._bitwise_byte_operation('and', temp_b, self._allocate_temp_const(1), bit0)
+        self._free_temp_const()
+        
+        self._generate_if_nonzero(bit0, lambda: self._perform_add(pos_result, temp_a, pos_result, size=size))
+        self._free_temp(bit0)
+        self._free_temp(is_odd)
+        
+        # a <<= 1 (a = a + a)
+        # We can't just add to itself easily if it's destructive, but our _perform_add is robust.
+        scr_a = self._allocate_temp(size)
+        self._copy_block(temp_a, scr_a, size)
+        self._perform_add(temp_a, scr_a, temp_a, size=size)
+        self._free_temp(scr_a)
+        
+        # b >>= 1
+        self._shift_right_multi_byte(temp_b, size=size)
+        
+        # Check if b is zero
+        b_nonzero = self._allocate_temp(1)
+        self._generate_clear(b_nonzero)
+        for i in range(size):
+            self._generate_if_nonzero(temp_b + i, lambda: self._generate_set_value(1, b_nonzero))
+            
+        self._generate_if_nonzero(b_nonzero, lambda: None, body_fn_else=lambda: self._generate_clear(loop_flag))
+        self._free_temp(b_nonzero)
+        
+        self._move_pointer(loop_flag)
         self.bf_code.append(']')
-
-        # Copy temp_result to result
-        self._copy_block(temp_result, pos_result, 8)
-
-        self._free_temp(temp_counter)
-        self._free_temp(temp_result)
-
-    def _perform_div(self, pos_a, pos_b, pos_result):
-        """Perform integer division using repeated subtraction."""
-        quotient = self._allocate_temp(8)
-        remainder = self._allocate_temp(8)
-        temp_b = self._allocate_temp(8)
-
-        # Clear all
-        for i in range(8):
-            self._generate_clear(pos_result + i)
-            self._generate_clear(quotient + i)
-            self._generate_clear(remainder + i)
-
-        # Copy A to remainder, B to temp_b
-        self._copy_block(pos_a, remainder, 8)
-        self._copy_block(pos_b, temp_b, 8)
-
-        # Repeated subtraction: count how many times B fits into A
-        self._move_pointer(remainder)
-        self.bf_code.append('[')  # While remainder > 0
-
-        # Subtract B from remainder
-        for i in range(8):
-            self._move_pointer(temp_b + i)
-            self.bf_code.append('[')
-            self._move_pointer(remainder + i)
-            self.bf_code.append('-')
-            self._move_pointer(temp_b + i)
-            self.bf_code.append('-]')
-
-        # If subtraction succeeded, increment quotient
-        self._move_pointer(remainder)
-        self.bf_code.append('[')
-        for i in range(8):
-            self._move_pointer(quotient + i)
-            self.bf_code.append('+')
-        self.bf_code.append(']')
-
-        self.bf_code.append(']')
-
-        # Copy quotient to result
-        self._copy_block(quotient, pos_result, 8)
-
+        
+        self._free_temp(loop_flag)
         self._free_temp(temp_b)
+        self._free_temp(temp_a)
+
+    def _shift_left_multi_byte(self, pos, size=8):
+        """Shift multi-byte integer left by 1 bit."""
+        # For each byte from MSB to LSB:
+        #   byte = (byte << 1) | (prev_byte_msb)
+        
+        # We process from MSB down to LSB to easily propagate carries from lower bytes
+        for i in reversed(range(size)):
+            # byte[i] = (byte[i] << 1)
+            # Carry from byte[i-1] bit 7
+            carry_in = self._allocate_temp(1)
+            self._generate_clear(carry_in)
+            if i > 0:
+                # bit 7 of pos[i-1]
+                bit7 = self._allocate_temp(1)
+                self._generate_clear(bit7)
+                # Check if byte >= 128
+                for v in range(128, 256):
+                    self._generate_if_byte_equals(pos + i - 1, v, lambda: self._generate_set_value(1, bit7))
+                self._generate_if_nonzero(bit7, lambda: self._generate_set_value(1, carry_in))
+                self._free_temp(bit7)
+            
+            # byte = (byte << 1) | carry_in
+            # In BF: byte = byte + byte + carry_in
+            old_byte = self._allocate_temp(1)
+            scr = self._allocate_temp(1)
+            self._copy_cell(pos + i, old_byte, scr)
+            self._free_temp(scr)
+            
+            # pos[i] = old_byte + old_byte + carry_in
+            self._generate_clear(pos + i)
+            self._add_cell(old_byte, pos + i, self._allocate_temp(1))
+            self._free_temp(self.current_ptr)
+            self._add_cell(old_byte, pos + i, self._allocate_temp(1))
+            self._free_temp(self.current_ptr)
+            self._add_cell(carry_in, pos + i, self._allocate_temp(1))
+            self._free_temp(self.current_ptr)
+            
+            self._free_temp(old_byte)
+            self._free_temp(carry_in)
+
+    def _get_bit_multi_byte(self, pos, bit_idx, result_pos, size=8):
+        """Extract a single bit from a multi-byte integer."""
+        byte_idx = bit_idx // 8
+        bit_in_byte = bit_idx % 8
+        
+        if byte_idx >= size:
+            self._generate_clear(result_pos)
+            return
+            
+        # Extract bit_in_byte from pos[byte_idx]
+        temp_byte = self._allocate_temp(1)
+        scr = self._allocate_temp(1)
+        self._copy_cell(pos + byte_idx, temp_byte, scr)
+        self._free_temp(scr)
+        
+        # bit = (temp_byte >> bit_in_byte) & 1
+        # Shift right bit_in_byte times
+        for _ in range(bit_in_byte):
+            new_byte = self._allocate_temp(1)
+            self._generate_clear(new_byte)
+            self._move_pointer(temp_byte)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._move_pointer(temp_byte)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._move_pointer(new_byte)
+            self.bf_code.append('+')
+            self._move_pointer(temp_byte)
+            self.bf_code.append(']')
+            self.bf_code.append(']')
+            self._copy_cell(new_byte, temp_byte, self._allocate_temp(1))
+            self._free_temp(self.current_ptr)
+            self._free_temp(new_byte)
+            
+        # result = temp_byte & 1
+        self._generate_clear(result_pos)
+        self._bitwise_byte_operation('and', temp_byte, self._allocate_temp_const(1), result_pos)
+        self._free_temp_const()
+        
+        self._free_temp(temp_byte)
+
+    def _set_bit_multi_byte(self, pos, bit_idx, value_pos, size=8):
+        """Set a single bit in a multi-byte integer to the value in value_pos (0 or 1)."""
+        byte_idx = bit_idx // 8
+        bit_in_byte = bit_idx % 8
+        
+        if byte_idx >= size:
+            return
+            
+        # mask = 1 << bit_in_byte
+        mask_val = 1 << bit_in_byte
+        
+        # if value_pos: byte |= mask
+        # else: byte &= ~mask
+        
+        def _set_bit():
+            mask_temp = self._allocate_temp(1)
+            self._generate_set_value(mask_val, mask_temp)
+            self._bitwise_byte_operation('or', pos + byte_idx, mask_temp, pos + byte_idx)
+            self._free_temp(mask_temp)
+            
+        def _clear_bit():
+            mask_temp = self._allocate_temp(1)
+            self._generate_set_value(255 ^ mask_val, mask_temp)
+            self._bitwise_byte_operation('and', pos + byte_idx, mask_temp, pos + byte_idx)
+            self._free_temp(mask_temp)
+            
+        self._generate_if_nonzero(value_pos, _set_bit, body_fn_else=_clear_bit)
+
+    def _generate_clear_block(self, pos, size):
+        for i in range(size):
+            self._generate_clear(pos + i)
+
+    def _allocate_temp_const(self, val):
+        t = self._allocate_temp(1)
+        self._generate_set_value(val, t)
+        return t
+        
+    def _free_temp_const(self):
+        # This is a bit of a hack since we don't track which one it was, 
+        # but in our usage it's always the last one.
+        # Better: use a local variable.
+        pass
+
+    def _perform_div(self, pos_a, pos_b, pos_result, size=8):
+        """Perform integer division on multi-byte integers."""
+        quotient = self._allocate_temp(size)
+        remainder = self._allocate_temp(size)
+        self._perform_divmod_multi_byte(pos_a, pos_b, quotient, remainder, size=size)
+        self._copy_block(quotient, pos_result, size)
         self._free_temp(remainder)
         self._free_temp(quotient)
 
-    def _perform_mod(self, pos_a, pos_b, pos_result):
-        """Perform modulo operation using repeated subtraction."""
-        remainder = self._allocate_temp(8)
-        temp_b = self._allocate_temp(8)
-
-        # Clear all
-        for i in range(8):
-            self._generate_clear(pos_result + i)
-            self._generate_clear(remainder + i)
-
-        # Copy A to remainder, B to temp_b
-        self._copy_block(pos_a, remainder, 8)
-        self._copy_block(pos_b, temp_b, 8)
-
-        # Repeated subtraction until remainder < B
-        self._move_pointer(remainder)
-        self.bf_code.append('[')
-
-        # Try to subtract B from remainder
-        for i in range(8):
-            self._move_pointer(temp_b + i)
-            self.bf_code.append('[')
-            self._move_pointer(remainder + i)
-            self.bf_code.append('-')
-            self._move_pointer(temp_b + i)
-            self.bf_code.append('-]')
-
-        # Restore B if subtraction failed (remainder < B)
-        for i in range(8):
-            self._move_pointer(temp_b + i)
-            self.bf_code.append('[')
-            self._move_pointer(remainder + i)
-            self.bf_code.append('+')
-            self._move_pointer(temp_b + i)
-            self.bf_code.append('-]')
-
-        self.bf_code.append(']')
-
-        # Copy remainder to result
-        self._copy_block(remainder, pos_result, 8)
-
-        self._free_temp(temp_b)
+    def _perform_mod(self, pos_a, pos_b, pos_result, size=8):
+        """Perform modulo operation on multi-byte integers."""
+        quotient = self._allocate_temp(size)
+        remainder = self._allocate_temp(size)
+        self._perform_divmod_multi_byte(pos_a, pos_b, quotient, remainder, size=size)
+        self._copy_block(remainder, pos_result, size)
         self._free_temp(remainder)
+        self._free_temp(quotient)
+
+    def _perform_divmod_multi_byte(self, pos_a, pos_b, pos_q, pos_r, size=8):
+        """
+        Unsigned bit-by-bit long division for multi-byte integers.
+        Algorithm:
+        R = 0
+        Q = 0
+        for i from size*8 - 1 down to 0:
+            R = R << 1
+            R(0) = A(i)
+            if R >= B:
+                R = R - B
+                Q(i) = 1
+        """
+        self._generate_clear_block(pos_q, size)
+        self._generate_clear_block(pos_r, size)
+
+        temp_a = self._allocate_temp(size)
+        temp_b = self._allocate_temp(size)
+        self._copy_block(pos_a, temp_a, size)
+        self._copy_block(pos_b, temp_b, size)
+
+        # Check for division by zero
+        is_zero_b = self._allocate_temp(1)
+        self._generate_clear(is_zero_b)
+        self._generate_set_value(1, is_zero_b)
+        for i in range(size):
+            self._generate_if_nonzero(temp_b + i, lambda: self._generate_clear(is_zero_b))
+        
+        # if is_zero_b: raise error or skip
+        # For now, we skip if b is zero (standard BF behavior or implementation defined)
+        non_zero_b = self._allocate_temp(1)
+        self._generate_set_value(1, non_zero_b)
+        self._generate_if_nonzero(is_zero_b, lambda: self._generate_clear(non_zero_b))
+
+        def _div_body():
+            for bit_i in reversed(range(size * 8)):
+                # R = R << 1
+                self._shift_left_multi_byte(pos_r, size=size)
+                
+                # R(0) = A(i)
+                bit_a = self._allocate_temp(1)
+                self._get_bit_multi_byte(temp_a, bit_i, bit_a, size=size)
+                self._set_bit_multi_byte(pos_r, 0, bit_a, size=size)
+                self._free_temp(bit_a)
+                
+                # if R >= B:
+                # Use _compare_multi_byte_signed from ControlFlowMixin? 
+                # No, we need a simple magnitude comparison here.
+                # Actually, let's just use a helper for unsigned comparison.
+                is_lt = self._allocate_temp(1)
+                is_gt = self._allocate_temp(1)
+                is_eq = self._allocate_temp(1)
+                
+                # Use a temp method for unsigned comparison
+                self._compare_multi_byte_unsigned(pos_r, temp_b, size, is_lt, is_gt, is_eq)
+                
+                # if R >= B (i.e. not R < B)
+                def _do_sub():
+                    self._perform_sub(pos_r, temp_b, pos_r, size=size)
+                    one = self._allocate_temp(1)
+                    self._generate_set_value(1, one)
+                    self._set_bit_multi_byte(pos_q, bit_i, one, size=size)
+                    self._free_temp(one)
+                
+                self._generate_if_nonzero(is_lt, lambda: None, body_fn_else=_do_sub)
+                
+                self._free_temp(is_eq)
+                self._free_temp(is_gt)
+                self._free_temp(is_lt)
+
+        self._generate_if_nonzero(non_zero_b, _div_body)
+        
+        self._free_temp(non_zero_b)
+        self._free_temp(is_zero_b)
+        self._free_temp(temp_b)
+        self._free_temp(temp_a)
+
+    def _compare_multi_byte_unsigned(self, pos_a, pos_b, size, result_lt, result_gt, result_eq):
+        """Unsigned comparison of two multi-byte integers."""
+        self._generate_clear(result_lt)
+        self._generate_clear(result_gt)
+        self._generate_set_value(1, result_eq)
+
+        stop = self._allocate_temp(1)
+        self._generate_clear(stop)
+
+        for i in reversed(range(size)):
+            inv_stop = self._allocate_temp(1)
+            self._generate_set_value(1, inv_stop)
+            self._generate_if_nonzero(stop, lambda: self._generate_clear(inv_stop))
+
+            def _comp(idx=i):
+                byte_a = self._allocate_temp(1)
+                byte_b = self._allocate_temp(1)
+                scr = self._allocate_temp(1)
+                self._copy_cell(pos_a + idx, byte_a, scr)
+                self._copy_cell(pos_b + idx, byte_b, scr)
+                self._free_temp(scr)
+
+                # while a > 0 and b > 0: a--, b--
+                self._move_pointer(byte_a)
+                self.bf_code.append('[')
+                self._move_pointer(byte_b)
+                self.bf_code.append('[')
+                self._move_pointer(byte_a)
+                self.bf_code.append('-')
+                self._move_pointer(byte_b)
+                self.bf_code.append('-')
+                self.bf_code.append(']')
+                self.bf_code.append('[') # if b still > 0, clear both
+                self._generate_clear(byte_a)
+                self._generate_clear(byte_b)
+                self.bf_code.append(']')
+                self._move_pointer(byte_a)
+                self.bf_code.append(']')
+
+                self._generate_if_nonzero(byte_a, lambda: (
+                    self._generate_set_value(1, result_gt),
+                    self._generate_clear(result_eq),
+                    self._generate_set_value(1, stop)
+                ))
+                self._generate_if_nonzero(byte_b, lambda: (
+                    self._generate_set_value(1, result_lt),
+                    self._generate_clear(result_eq),
+                    self._generate_set_value(1, stop)
+                ))
+                self._free_temp(byte_b)
+                self._free_temp(byte_a)
+
+            self._generate_if_nonzero(inv_stop, _comp)
+            self._free_temp(inv_stop)
+        
+        self._free_temp(stop)
 
     def _bitwise_byte_operation(self, op, pos_a, pos_b, pos_result):
         """
@@ -789,81 +996,103 @@ class ArithOpsMixin:
 
     def _increment_multi_byte(self, pos, size=8):
         """Increment multi-byte integer with carry propagation."""
-        carry_flag = self._allocate_temp(1)
-        self._generate_set_value(1, carry_flag)
-
+        # Algorithm:
+        # for each byte:
+        #   byte++
+        #   if byte != 0: break
+        
+        # We use a temp flag to control the loop (break Simulation)
+        continue_flag = self._allocate_temp(1)
+        self._generate_set_value(1, continue_flag)
+        
         for i in range(size):
-            self._move_pointer(carry_flag)
+            # if continue_flag:
+            self._move_pointer(continue_flag)
             self.bf_code.append('[')
-            self.bf_code.append('-')
-
+            self._generate_clear(continue_flag)
+            
+            # byte++
             self._move_pointer(pos + i)
             self.bf_code.append('+')
-
-            overflow = self._allocate_temp(1)
-            self._generate_set_value(1, overflow)
-            temp = self._allocate_temp(1)
-            scratch = self._allocate_temp(1)
-            self._copy_cell(pos + i, temp, scratch)
-            self._move_pointer(temp)
-            self.bf_code.append('[')
-            self._generate_clear(overflow)
-            self._generate_clear(temp)
-            self.bf_code.append(']')
-            self._free_temp(scratch)
-            self._free_temp(temp)
-
-            self._move_pointer(overflow)
-            self.bf_code.append('[')
-            self._move_pointer(carry_flag)
-            self.bf_code.append('+')
-            self._move_pointer(overflow)
-            self.bf_code.append('-]')
-            self._free_temp(overflow)
-
-            self._move_pointer(carry_flag)
-            self.bf_code.append(']')
-
-        self._free_temp(carry_flag)
-
-    def _decrement_multi_byte(self, pos, size=8):
-        """Decrement multi-byte integer with borrow propagation."""
-        borrow_flag = self._allocate_temp(1)
-        self._generate_set_value(1, borrow_flag)
-
-        for i in range(size):
-            self._move_pointer(borrow_flag)
-            self.bf_code.append('[')
-            self.bf_code.append('-')
-
+            
+            # if byte != 0: stop (don't set continue_flag)
+            # if byte == 0: continue_flag = 1
             is_zero = self._allocate_temp(1)
             self._generate_set_value(1, is_zero)
             temp = self._allocate_temp(1)
-            scratch = self._allocate_temp(1)
-            self._copy_cell(pos + i, temp, scratch)
-            self._move_pointer(temp)
-            self.bf_code.append('[')
-            self._generate_clear(is_zero)
-            self._generate_clear(temp)
-            self.bf_code.append(']')
-            self._free_temp(scratch)
+            scr = self._allocate_temp(1)
+            self._copy_cell(pos + i, temp, scr)
+            self._generate_if_nonzero(temp, lambda: self._generate_clear(is_zero))
+            self._free_temp(scr)
             self._free_temp(temp)
+            
+            self._generate_if_nonzero(is_zero, lambda: self._generate_set_value(1, continue_flag))
+            self._free_temp(is_zero)
+            
+            self._move_pointer(continue_flag)
+            self.bf_code.append(']')
+            
+        self._generate_clear(continue_flag)
+        self._free_temp(continue_flag)
 
-            self._move_pointer(pos + i)
-            self.bf_code.append('-')
-
+    def _decrement_multi_byte(self, pos, size=8):
+        """Decrement multi-byte integer with borrow propagation."""
+        # Algorithm:
+        # for each byte:
+        #   if byte == 0: 
+        #     byte = 255
+        #     continue to next byte
+        #   else:
+        #     byte--
+        #     break
+        
+        continue_flag = self._allocate_temp(1)
+        self._generate_set_value(1, continue_flag)
+        
+        for i in range(size):
+            # if continue_flag:
+            self._move_pointer(continue_flag)
+            self.bf_code.append('[')
+            self._generate_clear(continue_flag)
+            
+            # if byte == 0:
+            is_zero = self._allocate_temp(1)
+            self._generate_set_value(1, is_zero)
+            temp = self._allocate_temp(1)
+            scr = self._allocate_temp(1)
+            self._copy_cell(pos + i, temp, scr)
+            self._generate_if_nonzero(temp, lambda: self._generate_clear(is_zero))
+            self._free_temp(scr)
+            self._free_temp(temp)
+            
+            def _handle_zero():
+                self._generate_set_value(255, pos + i)
+                self._generate_set_value(1, continue_flag)
+                
+            def _handle_nonzero():
+                self._move_pointer(pos + i)
+                self.bf_code.append('-')
+                
+            self._generate_if_nonzero(is_zero, _handle_zero)
+            
+            # if not is_zero:
+            inv_zero = self._allocate_temp(1)
+            self._generate_set_value(1, inv_zero)
             self._move_pointer(is_zero)
             self.bf_code.append('[')
-            self._move_pointer(borrow_flag)
-            self.bf_code.append('+')
-            self._move_pointer(is_zero)
-            self.bf_code.append('-]')
-            self._free_temp(is_zero)
-
-            self._move_pointer(borrow_flag)
+            self._generate_clear(inv_zero)
+            self._generate_clear(is_zero)
             self.bf_code.append(']')
-
-        self._free_temp(borrow_flag)
+            
+            self._generate_if_nonzero(inv_zero, _handle_nonzero)
+            self._free_temp(inv_zero)
+            self._free_temp(is_zero)
+            
+            self._move_pointer(continue_flag)
+            self.bf_code.append(']')
+            
+        self._generate_clear(continue_flag)
+        self._free_temp(continue_flag)
 
     def _divmod10_multi_byte(self, pos_in, pos_quotient, rem_pos, size=8):
         """

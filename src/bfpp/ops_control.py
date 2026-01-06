@@ -284,13 +284,17 @@ class ControlFlowMixin:
             raise NotImplementedError('match subject currently supports a single token (var or literal)')
         subject = subject_tokens[0]
 
-        # For now, require the subject to be an int variable (or $var).
+        # For now, require the subject to be a scalar variable (or $var).
         subj_ref = subject[1:] if subject.startswith('$') else subject
         if subj_ref.lstrip('-').isdigit():
             raise NotImplementedError('match subject does not support numeric literals yet; use a variable')
         subj_info = self._resolve_var(subject)
-        if subj_info['type'] != 'int' or subj_info['size'] != 8:
+        if subj_info['type'] not in ('int', 'byte', 'char'):
+            raise NotImplementedError('match subject currently supports only int/byte/char variables')
+        if subj_info['type'] == 'int' and subj_info['size'] != 8:
             raise NotImplementedError('match subject currently supports only 8-byte int variables')
+        if subj_info['type'] in ('byte', 'char') and subj_info['size'] != 1:
+            raise NotImplementedError('match subject currently supports only 1-byte byte/char variables')
 
         def _find_brace_block_end(start_idx: int) -> int:
             # start_idx points at a line containing an opening '{'.
@@ -484,6 +488,19 @@ class ControlFlowMixin:
             self._free_temp(temp_b)
             self._free_temp(temp_a)
 
+        def _match_case_equals_byte_literal(case_tokens, flag_pos):
+            # Strict equality check between match subject (byte/char) and a numeric literal (0..255).
+            if not case_tokens:
+                raise ValueError('case requires a value')
+            if len(case_tokens) == 2 and case_tokens[0] == '-' and case_tokens[1].lstrip('-').isdigit():
+                raise ValueError('byte/char match cases do not support negative literals')
+            value = int(case_tokens[0])
+            if value < 0 or value > 255:
+                raise ValueError('byte/char match case value must be in 0..255')
+
+            self._generate_clear(flag_pos)
+            self._generate_if_byte_equals(subj_info['pos'], value, lambda: self._generate_set_value(1, flag_pos))
+
         # Compile: gate on matched flag to ensure first-match-wins.
         matched = self._allocate_temp()
         self._generate_clear(matched)
@@ -502,7 +519,10 @@ class ControlFlowMixin:
 
             def _run_case_when_unmatched():
                 cond_flag = self._allocate_temp()
-                _match_case_equals_int_literal(case_value_tokens, cond_flag)
+                if subj_info['type'] == 'int':
+                    _match_case_equals_int_literal(case_value_tokens, cond_flag)
+                else:
+                    _match_case_equals_byte_literal(case_value_tokens, cond_flag)
 
                 self._move_pointer(cond_flag)
                 self.bf_code.append('[')

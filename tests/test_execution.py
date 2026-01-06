@@ -299,6 +299,34 @@ def test_match_statement():
     print(f"✗ match statement failed. Output: {output}, Error: {error}")
     return False
 
+
+def test_match_statement_byte():
+    print("\nTesting match statement (byte)...")
+
+    code = """
+    declare byte a
+    set 2 on a
+
+    match (a) {
+        case 1:
+            print string "ONE"
+        case 2:
+            print string "TWO"
+        default:
+            print string "OTHER"
+    }
+    """
+
+    compiler = BrainFuckPlusPlusCompiler()
+    bf_code = compiler.compile(code)
+    output, error = execute_bf_code_inprocess(bf_code)
+
+    if "TWO" in output:
+        print("✓ match statement (byte) works")
+        return True
+    print(f"✗ match statement (byte) failed. Output: {output}, Error: {error}")
+    return False
+
 def main():
     print("=== BF++ Execution Test ===\n")
     
@@ -313,6 +341,7 @@ def main():
         test_input_on_byte,
         test_input_on_string,
         test_match_statement,
+        test_match_statement_byte,
     ]
     
     all_passed = True

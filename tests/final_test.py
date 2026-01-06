@@ -3,7 +3,7 @@
 Simplified test suite - skip complex/slow tests
 """
 
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 def test_case(name, code, expected_output=None):

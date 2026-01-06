@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test bitwise AND on bytes instead of ints"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 code = """

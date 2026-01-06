@@ -2,7 +2,7 @@
 """Manually test the comparison logic"""
 
 # Create a simple test: check if 1 == 3
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 
 code = """
 declare byte x

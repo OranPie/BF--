@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test 128 & 128 (MSB) should give 128"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 code = """

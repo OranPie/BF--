@@ -1,4 +1,4 @@
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 
 code = """
 declare byte a

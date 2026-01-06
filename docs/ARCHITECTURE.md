@@ -46,5 +46,4 @@ The goal of the current architecture is to keep the public surface compatible wh
 
 ## Backward compatibility
 
-- `src/core.py` re-exports `BrainFuckPlusPlusCompiler` for older imports.
 - `bfpp.__init__` re-exports `BrainFuckPlusPlusCompiler`, `preprocess`, `tokenize`, and the `bfpp.api` helpers.

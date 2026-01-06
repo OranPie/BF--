@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 code = """

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Quick test suite to verify the fixes"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 def test(name, code, expected):

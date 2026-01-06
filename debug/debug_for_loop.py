@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Debug for loop issue"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 
 # Simple for loop test
 code = """

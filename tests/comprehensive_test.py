@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Comprehensive test suite after fixes"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 def test(name, code, expected):

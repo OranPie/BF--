@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 
 # Add some debug logging to understand the flow
-import core
+import bfpp.compiler
 
-original_process_block = core.BrainFuckPlusPlusCompiler._process_block
+original_process_block = bfpp.compiler.BrainFuckPlusPlusCompiler._process_block
 
 def debug_process_block(self, lines, start_idx):
     print(f"_process_block called with start_idx={start_idx}")
@@ -16,7 +16,7 @@ def debug_process_block(self, lines, start_idx):
         print(f"  End line: '{lines[result]}'")
     return result
 
-core.BrainFuckPlusPlusCompiler._process_block = debug_process_block
+bfpp.compiler.BrainFuckPlusPlusCompiler._process_block = debug_process_block
 
 code = """if (x == 5) {
     move to y

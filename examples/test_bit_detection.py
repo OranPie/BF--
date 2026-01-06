@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test if bit detection is working at all"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 # Simple test: just copy the value (no operation)

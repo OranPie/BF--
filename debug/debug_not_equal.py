@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Debug != operator"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 
 # Add detailed logging
-import core
+import bfpp.compiler
 
-original_move_pointer = core.BrainFuckPlusPlusCompiler._move_pointer
+original_move_pointer = bfpp.compiler.BrainFuckPlusPlusCompiler._move_pointer
 
 def debug_move_pointer(self, target_pos):
     if hasattr(self, '_debug_mode') and self._debug_mode:
         print(f"  _move_pointer: {self.current_ptr} -> {target_pos}")
     return original_move_pointer(self, target_pos)
 
-core.BrainFuckPlusPlusCompiler._move_pointer = debug_move_pointer
+bfpp.compiler.BrainFuckPlusPlusCompiler._move_pointer = debug_move_pointer
 
 # Test != evaluation
 code = """

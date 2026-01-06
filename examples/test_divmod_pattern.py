@@ -4,7 +4,7 @@ Simpler bitwise implementation - rewrite from scratch
 Uses bit-by-bit checking with powers of 2 from MSB to LSB
 """
 
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 
 def test_divmod():
     """Test if the divmod pattern works at all"""

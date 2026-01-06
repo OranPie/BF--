@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test 1 & 1 should give 1"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 code = """

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 
 code = """
 declare byte i
@@ -11,9 +11,9 @@ for (set 0 on i; i != 3; inc on i) {
 compiler = BrainFuckPlusPlusCompiler()
 
 # Add debugging to for loop
-import core
+import bfpp.compiler
 
-original_handle_for = core.BrainFuckPlusPlusCompiler._handle_for_loop
+original_handle_for = bfpp.compiler.BrainFuckPlusPlusCompiler._handle_for_loop
 
 def debug_handle_for(self, tokens, lines, line_idx):
     print(f"_handle_for_loop called")
@@ -35,7 +35,7 @@ def debug_handle_for(self, tokens, lines, line_idx):
 
     return original_handle_for(self, tokens, lines, line_idx)
 
-core.BrainFuckPlusPlusCompiler._handle_for_loop = debug_handle_for
+bfpp.compiler.BrainFuckPlusPlusCompiler._handle_for_loop = debug_handle_for
 
 bf_code = compiler.compile(code)
 print(f"\nGenerated {len(bf_code)} chars")

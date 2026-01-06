@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test bitwise operations to see what fails"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 def test_bitwise(name, code, timeout=3):

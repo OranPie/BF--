@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Simple bitwise test - just output the raw byte"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 code = """

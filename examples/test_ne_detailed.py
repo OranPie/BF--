@@ -20,7 +20,7 @@ if (x != 3) {{
 }}
 """
 
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 compiler = BrainFuckPlusPlusCompiler()

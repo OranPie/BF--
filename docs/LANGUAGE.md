@@ -13,7 +13,7 @@ This document describes **the language as implemented in this repository** (see 
 In Python:
 
 ```python
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 
 code = 'print string "Hello!\\n"'
 bf = BrainFuckPlusPlusCompiler().compile(code)
@@ -22,7 +22,7 @@ open('out.bf', 'w').write(bf)
 
 Notes:
 
-- `src/core.py` is a **compatibility facade** that re-exports `BrainFuckPlusPlusCompiler` from `src/bfpp/compiler.py`.
+- The compiler implementation is `src/bfpp/compiler.py`.
 - BF++ compiles to Brainfuck source (a string of `+-<>[],.`).
 
 ### 0.2 Run Brainfuck

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test ~5 (bitwise NOT) should give -6 in two's complement"""
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 
 code = """

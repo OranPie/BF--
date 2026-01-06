@@ -3,7 +3,7 @@
 Test suite for BF++ compiler operations
 """
 
-from core import BrainFuckPlusPlusCompiler
+from bfpp import BrainFuckPlusPlusCompiler
 import subprocess
 import sys
 

@@ -151,7 +151,16 @@ class BrainFuckPlusPlusCompiler(
 
     def _raise_compile_error(self, e: Exception, lines):
         line_no = getattr(self, '_last_line', 1)
-        raise make_compile_error(message=f"{type(e).__name__}: {e}", source='\n'.join(lines), line=line_no) from e
+        kind = 'compile'
+        if isinstance(e, NotImplementedError):
+            kind = 'not_implemented'
+        elif isinstance(e, ValueError):
+            kind = 'parse'
+        elif isinstance(e, TypeError):
+            kind = 'type'
+        elif isinstance(e, RuntimeError):
+            kind = 'runtime'
+        raise make_compile_error(message=f"{type(e).__name__}: {e}", source='\n'.join(lines), line=line_no, kind=kind) from e
 
     def _tokenize(self, line):
         """

@@ -16,6 +16,15 @@ class VarsOpsMixin:
         except InvalidOperation:
             raise ValueError(f"Invalid float literal: {token}")
 
+    def _parse_expfloat_literal_scaled(self, token: str) -> int:
+        try:
+            scaled = int(Decimal(token) * self._FLOAT_SCALE)
+        except InvalidOperation:
+            raise ValueError(f"Invalid expfloat literal: {token}")
+        if scaled < -(2**63) or scaled > (2**63 - 1):
+            raise ValueError("expfloat literal out of int64 range")
+        return scaled
+
     def _check_float_r1_range(self, scaled: int) -> None:
         if not (int(self._FLOAT_R1_MIN * self._FLOAT_SCALE) <= int(scaled) <= int(self._FLOAT_R1_MAX * self._FLOAT_SCALE)):
             raise ValueError("float literal out of R1 range")
@@ -120,7 +129,7 @@ class VarsOpsMixin:
         if not dest_info.get('is_array') and not dest_info.get('is_dict'):
             raise ValueError("Not a collection")
 
-        if dest_info['type'] in ('int', 'float', 'float64'):
+        if dest_info['type'] in ('int', 'float', 'float64', 'expfloat'):
             byte_values = int(value).to_bytes(8, 'little', signed=True)
             for idx in range(length):
                 pos = dest_info['pos'] + idx * elem_size
@@ -213,12 +222,12 @@ class VarsOpsMixin:
                 elem_size = 2
             elif value_type in ('int', 'int64'):
                 elem_size = 8
-            elif value_type in ('float', 'float64'):
+            elif value_type in ('float', 'float64', 'expfloat'):
                 elem_size = 8
             elif value_type == 'string':
                 elem_size = string_elem_size
             else:
-                raise NotImplementedError("Dict currently supports value types: byte, char, int16, int64, float, float64, string")
+                raise NotImplementedError("Dict currently supports value types: byte, char, int16, int64, float, float64, expfloat, string")
 
             length = len(keys)
             size = elem_size * length
@@ -244,7 +253,7 @@ class VarsOpsMixin:
         elem_type = raw_type
         length = None
 
-        m_type_arr = re.match(r'^(byte|char|int|int16|int64|float|float64)\[(\d+)\]$', raw_type)
+        m_type_arr = re.match(r'^(byte|char|int|int16|int64|float|float64|expfloat)\[(\d+)\]$', raw_type)
         if m_type_arr:
             elem_type = m_type_arr.group(1)
             length = int(m_type_arr.group(2))
@@ -296,7 +305,7 @@ class VarsOpsMixin:
             elem_size = 2
         elif elem_type in ('int', 'int64'):
             elem_size = 8
-        elif elem_type in ('float', 'float64'):
+        elif elem_type in ('float', 'float64', 'expfloat'):
             elem_size = 8
         else:
             raise ValueError(f"Unknown type: {elem_type}")
@@ -350,13 +359,16 @@ class VarsOpsMixin:
                 self._apply_runtime_subscript_op(base_info, idx_var, _slot_set_string)
                 return
 
+            if base_info['type'] == 'string':
+                raise TypeError("Cannot assign numeric value to string element")
+
             if len(expr_tokens) == 2 and expr_tokens[0] == '-' and expr_tokens[1].lstrip('-').isdigit():
                 value = -int(expr_tokens[1])
             else:
                 value = int(expr_tokens[0])
 
             def _slot_set_num(pos, slot):
-                if base_info['type'] in ('int', 'int16', 'int64', 'float', 'float64'):
+                if base_info['type'] in ('int', 'int16', 'int64', 'float', 'float64', 'expfloat'):
                     elem_size = base_info['elem_size']
                     byte_values = int(value).to_bytes(elem_size, 'little', signed=True)
                     for i, byte_val in enumerate(byte_values):
@@ -369,6 +381,14 @@ class VarsOpsMixin:
 
         dest_info = self._resolve_var(dest_ref)
 
+        if dest_info['type'] in ('string', 'varstring'):
+            if not expr_tokens[0].startswith('"'):
+                raise TypeError("Cannot assign numeric value to string variable")
+
+        if (dest_info.get('is_array') or dest_info.get('is_dict')) and dest_info['type'] == 'string':
+            if not expr_tokens[0].startswith('"'):
+                raise TypeError("Cannot assign numeric value to string collection")
+
         # String literal
         if expr_tokens[0].startswith('"'):
             if dest_info['type'] not in ('string', 'varstring'):
@@ -378,9 +398,25 @@ class VarsOpsMixin:
             else:
                 self._set_string_literal(expr_tokens[0], dest_ref)
 
-        # Negative numeric literal (e.g., "-5" tokenized as ['-', '5'])
-        elif (len(expr_tokens) == 2 and expr_tokens[0] == '-' and expr_tokens[1].lstrip('-').isdigit()):
-            self._set_numeric_literal(-int(expr_tokens[1]), dest_ref)
+        # Negative numeric literal (e.g., "-5" or "-1.23")
+        elif (len(expr_tokens) == 2 and expr_tokens[0] == '-' and 
+              (expr_tokens[1].lstrip('-').isdigit() or any(c in expr_tokens[1] for c in ('.', 'e', 'E')))):
+            if dest_info['type'] in ('float', 'float64', 'expfloat'):
+                tok = expr_tokens[1]
+                lit = -(
+                    self._parse_expfloat_literal_scaled(tok)
+                    if dest_info['type'] == 'expfloat'
+                    else self._parse_float_literal_scaled(tok)
+                )
+                if dest_info['type'] == 'float':
+                    self._check_float_r1_range(lit)
+            else:
+                lit = -int(expr_tokens[1])
+            
+            if dest_info.get('is_array') or dest_info.get('is_dict'):
+                self._set_collection_numeric_literal(lit, dest_info)
+            else:
+                self._set_numeric_literal(lit, dest_ref)
 
         # Expression or variable copy
         elif expr_tokens[0].startswith('$') or any(op in expr_tokens for op in ['+', '-', '*', '/', '%', '&', '|', '^', '~']):
@@ -390,12 +426,16 @@ class VarsOpsMixin:
 
         # Numeric literal
         else:
-            if dest_info['type'] in ('float', 'float64'):
-                if len(expr_tokens) == 2 and expr_tokens[0] == '-' and '.' in expr_tokens[1]:
-                    lit = -self._parse_float_literal_scaled(expr_tokens[1])
+            if dest_info['type'] in ('float', 'float64', 'expfloat'):
+                tok = expr_tokens[0]
+                if any(c in tok for c in ('.', 'e', 'E')):
+                    lit = (
+                        self._parse_expfloat_literal_scaled(tok)
+                        if dest_info['type'] == 'expfloat'
+                        else self._parse_float_literal_scaled(tok)
+                    )
                 else:
-                    tok = expr_tokens[0]
-                    lit = self._parse_float_literal_scaled(tok) if '.' in tok else int(tok) * self._FLOAT_SCALE
+                    lit = int(tok) * self._FLOAT_SCALE
                 if dest_info['type'] == 'float':
                     self._check_float_r1_range(lit)
             else:
@@ -426,7 +466,7 @@ class VarsOpsMixin:
         """Set a numeric literal to a variable."""
         var_info = self._resolve_var(dest_var)
 
-        if var_info['type'] in ('int', 'int16', 'int64', 'float', 'float64'):
+        if var_info['type'] in ('int', 'int16', 'int64', 'float', 'float64', 'expfloat'):
             # Convert to appropriate byte size
             elem_size = var_info['size'] if not (var_info.get('is_array') or var_info.get('is_dict')) else var_info['elem_size']
             byte_values = value.to_bytes(elem_size, 'little', signed=True)

@@ -11,6 +11,14 @@ It intentionally covers the whole project (not only floats).
 
 ## NOW: What works today
 
+- **Robust int64 backend**
+  - Full 8-byte `int` arithmetic primitives:
+    - Addition/Subtraction
+    - Signed Multiplication (`*`)
+    - Signed Division (`/`) and Modulo (`%`)
+    - Bitwise operations (`&`, `|`, `^`, `~`)
+  - Full 64-bit decimal printing for `int`.
+
 ### Repository structure
 
 - `src/bfpp/`
@@ -36,7 +44,41 @@ It intentionally covers the whole project (not only floats).
   - `IOMixin` (I/O statements)
   - `ControlFlowMixin` (if/while/for/match)
 
-### Language surface (statements)
+### Error Reporting
+
+- **Classification**: Compile-time errors are categorized into `ParseError`, `TypeError`, `NotImplementedError`, `RuntimeError`, and `InternalError`.
+- **Context & Hints**: Every error includes a source code snippet with line numbers and a pragmatic `Hint:` for resolution.
+
+### Output & Runtime Efficiency Status
+
+- **Numeric Types (int/float/expfloat)**: 
+  - **Arithmetic Complexity**:
+    - **Addition/Subtraction**: O(N) where N is bytes. Low BF overhead.
+    - **Multiplication**: O(bits^2) via Russian Peasant algorithm. Significant BF code size (~50k-200k chars for 64-bit).
+    - **Division/Modulo**: O(bits^2) via bit-by-bit long division. Extremely heavy BF code overhead (~500k+ chars for 64-bit).
+  - **Lightweight Printing (varout)**: Both `float` and `expfloat` currently use a 16-bit-based decimal printer.
+    - **Efficiency**: High (~1.4M chars for basic output).
+    - **Trade-off**: **Lossy**. Only correctly prints values in range `[-32.768, 32.767]`. Larger values wrap.
+  - **Robust Printing**: `int` uses full 64-bit long-division-by-10. Accurate but very large BF code size.
+- **String Operations**:
+  - **Assignment/Output**: O(L) where L is string length. Linear BF code generation.
+  - **Memory**: Each string has a fixed buffer size allocated at declaration time.
+- **Runtime Subscripts**:
+  - Uses deterministic pointer-shifting loops.
+  - **Efficiency**: O(Index) runtime complexity. Generates a fixed-size BF loop block regardless of array size.
+- **Control Flow**:
+  - **if/while**: Constant BF overhead for jumping.
+  - **for**: Fixed-step loops are efficient.
+  - **match**: O(Cases) complexity using sequential if-checks.
+- **Memory Management**:
+  - Uses a stack-based temporary allocator for constants and intermediate results.
+  - Automatic cleanup of temporary cells prevents memory leaks on the BF tape.
+- **Preprocessor**:
+  - **Macro Expansion**: O(Depth * Tokens). Expansion limit enforced at 50 to prevent infinite recursion.
+  - **Code Stripping**: Comments and whitespaces are stripped before tokenization.
+- **Optimization**:
+  - **Level 1+**: Folds repeated `+` / `-` / `>` / `<` and simplifies loops.
+  - **Trade-off**: Increases compilation time but reduces generated BF size significantly.
 
 Authoritative language reference: `docs/LANGUAGE.md`.
 
@@ -118,8 +160,18 @@ Runtime subscripts are supported in a limited, deterministic way:
     - `inputfloat on <floatvar>`
     - `varout <floatvar>` prints `[-]INT.FFF`
     - Comparisons in conditions (`== != < > <= >=`)
-    - Expression assignment supports `+` / `-`
+    - Expression assignment supports `+` / `-` / `*` / `/`
     - Conversions via `set $int on float` and `set $float on int` (truncation)
+
+- `expfloat` (8-byte, scale=1000)
+  - Stored as a full 8-byte signed scaled integer.
+  - **Scientific Notation**: Supports literals like `1e-3` or `2.5E+6` in `set` and conditions.
+  - Supported now:
+    - `declare expfloat`
+    - `set` with exponential literals (Decimal-based parsing)
+    - `varout <expfloatvar>` (uses lightweight 16-bit printer for size efficiency)
+    - Comparisons in conditions
+    - Expression assignment supports `+` / `-` / `*` / `/` using full 64-bit arithmetic
 
 - `float64` (deferred for full correctness)
   - Declared and stored as 8 cells like `float`.
@@ -131,11 +183,10 @@ Runtime subscripts are supported in a limited, deterministic way:
 
 ### Highest priority
 
-- **Float R1: complete arithmetic set**
-  - Implement `*` and `/` for `float` expressions (scale-aware):
-    - `a*b` should compute `(a_scaled * b_scaled) / 1000`
-    - `a/b` should compute `(a_scaled * 1000) / b_scaled`
-  - Define and enforce behavior for division-by-zero and overflow.
+- **Float (R1) & Expfloat: complete arithmetic set**
+  - Implement `*` and `/` expressions (scale-aware): DONE.
+  - Current support: `+`, `-`, `*`, `/`.
+  - Define and enforce behavior for division-by-zero: Initial compile-time check added.
 
 - **Robust int64 backend**
   - Strengthen 8-byte `int` arithmetic primitives used by expression compilation:
@@ -171,7 +222,9 @@ Runtime subscripts are supported in a limited, deterministic way:
   - Conversion roundtrips: int->float->int, float->int->float
   - Runtime subscripts on float arrays/dicts
 
-- **Performance / BF size improvements**
+- **Optimized 8-byte Decimal Printing**
+  - The current `int` printer is robust but the `expfloat` printer is lossy (16-bit only).
+  - Goal: Implement an optimized full 64-bit decimal printer for `expfloat` that doesn't explode BF size as much as the current `int` one.
   - Identify hot codegen patterns that explode BF size.
   - Add optimizer passes or smarter code generation where safe.
 
@@ -195,9 +248,9 @@ Runtime subscripts are supported in a limited, deterministic way:
 
 - **int (8-byte)**
   - declare/set/inc/dec: YES
-  - varout decimal: YES (deterministic; backend still needs upgrades)
+  - varout decimal: YES (robust 64-bit)
   - inputint: YES
-  - expression assignment: YES
+  - expression assignment: YES (signed 64-bit)
 
 - **string**
   - declare/set/varout/input: YES
@@ -207,7 +260,14 @@ Runtime subscripts are supported in a limited, deterministic way:
   - inputfloat: YES
   - varout `INT.FFF`: YES
   - comparisons: YES
-  - expression assignment: `+/-` YES, `*//` TODO
+  - expression assignment: `+/-/*//` YES
+
+- **expfloat (8-byte, scale=1000)**
+  - declare/set (literal/scientific): YES
+  - inputfloat: YES
+  - varout `INT.FFF`: YES (lightweight printer)
+  - comparisons: YES
+  - expression assignment: `+/-/*//` YES (64-bit)
 
 - **float64**
   - declare/set literal/input/varout: PARTIAL

@@ -314,8 +314,8 @@ class IOMixin:
 
         var_ref = tokens[0]
         var_info = self._resolve_var(var_ref)
-        if var_info['type'] not in ('float', 'float64') or var_info['size'] != 8:
-            raise NotImplementedError("inputfloat currently supports only 8-byte float/float64 variables")
+        if var_info['type'] not in ('float', 'float64', 'expfloat') or var_info['size'] != 8:
+            raise NotImplementedError("inputfloat currently supports only 8-byte float/float64/expfloat variables")
 
         dest = var_info['pos']
 
@@ -513,6 +513,10 @@ class IOMixin:
 
         self._generate_if_nonzero(sign, _apply_sign)
 
+        # Apply runtime range check if destination is R1 float
+        if var_info['type'] == 'float':
+            self._generate_runtime_range_check_r1(dest)
+
         self._free_temp(high)
         self._free_temp(low)
         self._free_temp(scratch)
@@ -581,6 +585,8 @@ class IOMixin:
                     self._output_int_as_decimal(pos, size=base_info['elem_size'])
                 elif base_info['type'] in ('float', 'float64'):
                     self._output_float_as_decimal_1000(pos)
+                elif base_info['type'] == 'expfloat':
+                    self._output_float_as_decimal_1000(pos)
                 elif base_info['type'] == 'string':
                     self._output_string_until_null_deterministic(pos, base_info['elem_size'])
                 else:
@@ -631,6 +637,17 @@ class IOMixin:
                     self._output_literal(end_token)
                 return
 
+            if var_info['type'] == 'expfloat':
+                if sep_token is None:
+                    sep_token = '32'
+                for i in range(length):
+                    self._output_float_as_decimal_1000(var_info['pos'] + i * elem_size)
+                    if i != length - 1 and sep_token is not None:
+                        self._output_literal(sep_token)
+                if end_token is not None:
+                    self._output_literal(end_token)
+                return
+
             if var_info['type'] == 'string':
                 if sep_token is None:
                     sep_token = None
@@ -659,6 +676,11 @@ class IOMixin:
             if end_token is not None:
                 self._output_literal(end_token)
 
+        elif var_info['type'] == 'expfloat':
+            self._output_float_as_decimal_1000(var_info['pos'])
+            if end_token is not None:
+                self._output_literal(end_token)
+
         elif var_info['type'] in ['byte', 'char']:
             self._move_to_var(var_name)
             self.bf_code.append('.')
@@ -667,6 +689,180 @@ class IOMixin:
 
         else:
             raise NotImplementedError(f"varout not implemented for type {var_info['type']}")
+
+    def _output_scaled_int_as_decimal_1000(self, pos, size=8):
+        # Print signed fixed-point value stored as scaled-by-1000 int (8 bytes).
+        msb = pos + (size - 1)
+        is_neg = self._allocate_temp(1)
+        self._generate_clear(is_neg)
+
+        flag_ge128 = self._allocate_temp(1)
+        self._generate_clear(flag_ge128)
+        for v in range(128, 256):
+            self._generate_if_byte_equals(msb, v, lambda: self._generate_set_value(1, flag_ge128))
+        self._generate_if_nonzero(flag_ge128, lambda: self._generate_set_value(1, is_neg))
+        self._free_temp(flag_ge128)
+
+        mag = self._allocate_temp(size)
+        self._copy_block(pos, mag, size)
+
+        def _apply_abs():
+            self._output_literal('"-"')
+            tmp_not = self._allocate_temp(size)
+            self._perform_bitwise_not(mag, tmp_not, size=size)
+            self._copy_block(tmp_not, mag, size)
+            self._free_temp(tmp_not)
+            self._increment_multi_byte(mag, size=size)
+
+        self._generate_if_nonzero(is_neg, _apply_abs)
+
+        # quotient = mag // 1000, remainder = mag % 1000
+        quotient = self._allocate_temp(size)
+        remainder = self._allocate_temp(size)
+        const_1000 = self._allocate_temp(size)
+        for i in range(size):
+            self._generate_clear(const_1000 + i)
+        b = int(1000).to_bytes(size, 'little', signed=False)
+        for i, byte_val in enumerate(b):
+            self._generate_set_value(byte_val, const_1000 + i)
+
+        self._perform_divmod_multi_byte(mag, const_1000, quotient, remainder, size=size)
+
+        self._output_int_as_decimal(quotient, size=size)
+        self._output_literal('"."')
+
+        # remainder < 1000, output as 3 digits with leading zeros
+        low = self._allocate_temp(1)
+        high = self._allocate_temp(1)
+        scr = self._allocate_temp(1)
+        self._generate_clear(scr)
+        self._generate_clear(low)
+        self._generate_clear(high)
+        self._copy_cell(remainder + 0, low, scr)
+        self._copy_cell(remainder + 1, high, scr)
+        self._free_temp(scr)
+
+        # Reuse the existing float printer's fractional logic by temporarily placing
+        # (high, low) as the remainder and running the digit extraction.
+        # We'll inline the minimal digit extraction here.
+        hundreds = self._allocate_temp(1)
+        tens = self._allocate_temp(1)
+        ones = self._allocate_temp(1)
+        self._generate_clear(hundreds)
+        self._generate_clear(tens)
+        self._generate_clear(ones)
+
+        def _low_ge_n_flag(n: int, out_flag):
+            self._generate_clear(out_flag)
+            for vv in range(n, 256):
+                self._generate_if_byte_equals(low, vv, lambda: self._generate_set_value(1, out_flag))
+
+        def _emit_digit(dpos):
+            out = self._allocate_temp(1)
+            tmpd = self._allocate_temp(1)
+            scr2 = self._allocate_temp(1)
+            self._generate_set_value(48, out)
+            self._generate_clear(scr2)
+            self._copy_cell(dpos, tmpd, scr2)
+            self._move_pointer(tmpd)
+            self.bf_code.append('[')
+            self._move_pointer(out)
+            self.bf_code.append('+')
+            self._move_pointer(tmpd)
+            self.bf_code.append('-]')
+            self._move_pointer(out)
+            self.bf_code.append('.')
+            self._generate_clear(out)
+            self._free_temp(scr2)
+            self._free_temp(tmpd)
+            self._free_temp(out)
+
+        ge100 = self._allocate_temp(1)
+        self._generate_clear(ge100)
+        self._generate_if_nonzero(high, lambda: self._generate_set_value(1, ge100))
+        low_ge100 = self._allocate_temp(1)
+        _low_ge_n_flag(100, low_ge100)
+        inv_high = self._allocate_temp(1)
+        self._generate_set_value(1, inv_high)
+        self._generate_if_nonzero(high, lambda: self._generate_clear(inv_high))
+        self._generate_if_nonzero(inv_high, lambda: self._generate_if_nonzero(low_ge100, lambda: self._generate_set_value(1, ge100)))
+        self._free_temp(inv_high)
+        self._free_temp(low_ge100)
+
+        self._move_pointer(ge100)
+        self.bf_code.append('[')
+        self._move_pointer(hundreds)
+        self.bf_code.append('+')
+        low_ge100 = self._allocate_temp(1)
+        _low_ge_n_flag(100, low_ge100)
+        def _sub100_ge():
+            self._move_pointer(low)
+            self.bf_code.append('-' * 100)
+        def _sub100_lt():
+            self._move_pointer(low)
+            self.bf_code.append('+' * 156)
+            self._move_pointer(high)
+            self.bf_code.append('-')
+        self._generate_if_nonzero(low_ge100, _sub100_ge)
+        inv = self._allocate_temp(1)
+        self._generate_set_value(1, inv)
+        self._move_pointer(low_ge100)
+        self.bf_code.append('[')
+        self._move_pointer(inv)
+        self.bf_code.append('-')
+        self._generate_clear(low_ge100)
+        self.bf_code.append(']')
+        self._generate_if_nonzero(inv, _sub100_lt)
+        self._free_temp(inv)
+        self._free_temp(low_ge100)
+
+        self._generate_clear(ge100)
+        self._generate_if_nonzero(high, lambda: self._generate_set_value(1, ge100))
+        low_ge100 = self._allocate_temp(1)
+        _low_ge_n_flag(100, low_ge100)
+        inv_high2 = self._allocate_temp(1)
+        self._generate_set_value(1, inv_high2)
+        self._generate_if_nonzero(high, lambda: self._generate_clear(inv_high2))
+        self._generate_if_nonzero(inv_high2, lambda: self._generate_if_nonzero(low_ge100, lambda: self._generate_set_value(1, ge100)))
+        self._free_temp(inv_high2)
+        self._free_temp(low_ge100)
+        self._move_pointer(ge100)
+        self.bf_code.append(']')
+        self._free_temp(ge100)
+
+        ge10 = self._allocate_temp(1)
+        _low_ge_n_flag(10, ge10)
+        self._move_pointer(ge10)
+        self.bf_code.append('[')
+        self._move_pointer(tens)
+        self.bf_code.append('+')
+        self._move_pointer(low)
+        self.bf_code.append('-' * 10)
+        self._generate_clear(ge10)
+        _low_ge_n_flag(10, ge10)
+        self._move_pointer(ge10)
+        self.bf_code.append(']')
+        self._free_temp(ge10)
+
+        scr3 = self._allocate_temp(1)
+        self._generate_clear(scr3)
+        self._copy_cell(low, ones, scr3)
+        self._free_temp(scr3)
+
+        _emit_digit(hundreds)
+        _emit_digit(tens)
+        _emit_digit(ones)
+
+        self._free_temp(ones)
+        self._free_temp(tens)
+        self._free_temp(hundreds)
+        self._free_temp(high)
+        self._free_temp(low)
+        self._free_temp(const_1000)
+        self._free_temp(remainder)
+        self._free_temp(quotient)
+        self._free_temp(mag)
+        self._free_temp(is_neg)
 
     def _output_int_as_decimal(self, pos, size=8):
         """Robust multi-byte decimal output using long division by 10."""

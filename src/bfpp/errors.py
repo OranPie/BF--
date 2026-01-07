@@ -28,15 +28,31 @@ def _hint_for(message: str, *, kind: str) -> Optional[str]:
         if 'unterminated macro' in msg:
             return 'Check for a missing closing ")" in a macro invocation.'
         return None
-    if kind == 'compile':
+    if kind in ('compile', 'parse', 'type', 'not_implemented', 'runtime', 'internal'):
         if 'unknown variable' in msg:
             return 'Declare the variable first (declare byte/char/int/string...) and check spelling.'
         if 'mismatched parentheses' in msg:
             return 'Check for missing ")" or an extra "(" in the statement.'
         if 'invalid condition' in msg:
             return 'Conditions must be of the form: (x), (x == 1), (x != 1), (x < 1), etc.'
+        if kind == 'not_implemented':
+            return 'This feature is not implemented yet in this compiler.'
         return None
     return None
+
+
+def _compile_error_prefix(kind: str) -> str:
+    if kind == 'parse':
+        return 'ParseError'
+    if kind == 'type':
+        return 'TypeError'
+    if kind == 'not_implemented':
+        return 'NotImplementedError'
+    if kind == 'runtime':
+        return 'RuntimeError'
+    if kind == 'internal':
+        return 'InternalError'
+    return 'CompileError'
 
 
 @dataclass
@@ -55,6 +71,7 @@ class BFPPPreprocessError(BFPPError):
 
 @dataclass
 class BFPPCompileError(BFPPError):
+    kind: str
     line: int
     context: str
 
@@ -71,13 +88,15 @@ def make_preprocess_error(*, message: str, source: str, line: int) -> BFPPPrepro
     )
 
 
-def make_compile_error(*, message: str, source: str, line: int) -> BFPPCompileError:
+def make_compile_error(*, message: str, source: str, line: int, kind: str = 'compile') -> BFPPCompileError:
     lines = source.split('\n')
     ctx = _build_context(lines, line)
-    hint = _hint_for(message, kind='compile')
+    hint = _hint_for(message, kind=kind)
     hint_block = f"\nHint: {hint}" if hint else ""
+    prefix = _compile_error_prefix(kind)
     return BFPPCompileError(
-        message=f"CompileError: {message} (line {line})\n{ctx}{hint_block}",
+        message=f"{prefix}: {message} (line {line})\n{ctx}{hint_block}",
+        kind=kind,
         line=line,
         context=ctx,
     )

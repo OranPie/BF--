@@ -220,6 +220,12 @@ def tokenize(line: str):
             i += 1
             continue
 
+        m_num = re.match(r'(\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?', line[i:])
+        if m_num:
+            tokens.append(m_num.group(0))
+            i += len(m_num.group(0))
+            continue
+
         if line[i] == '"':
             j = i + 1
             while j < len(line) and line[j] != '"':

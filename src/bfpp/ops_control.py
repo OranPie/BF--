@@ -744,7 +744,7 @@ class ControlFlowMixin:
 
             if len(tokens) == 3:
                 try:
-                    if '.' in tokens[2]:
+                    if any(c in tokens[2] for c in ('.', 'e', 'E')):
                         try:
                             value = int(Decimal(tokens[2]) * 1000)
                         except InvalidOperation:
@@ -767,7 +767,7 @@ class ControlFlowMixin:
                 if rt is not None:
                     base_name, idx_var = rt
                     base_info = self._resolve_var(base_name)
-                    if base_info['type'] not in ('int', 'int16', 'int64', 'float', 'float64'):
+                    if base_info['type'] not in ('int', 'int16', 'int64', 'float', 'float64', 'expfloat'):
                         raise NotImplementedError('Runtime-subscript comparisons support only integer and float elements')
                     size = base_info.get('elem_size', 8)
                     tmp = self._allocate_temp(size)
@@ -775,7 +775,7 @@ class ControlFlowMixin:
                     self._load_runtime_subscript_into_buffer(base_info, idx_var, tmp, size)
                     return tmp, size
                 info = self._resolve_var(ref)
-                if info['type'] not in ('int', 'int16', 'int64', 'float', 'float64'):
+                if info['type'] not in ('int', 'int16', 'int64', 'float', 'float64', 'expfloat'):
                     raise NotImplementedError("Comparisons currently supported only for integer and float values")
                 return info['pos'], info['size']
 

@@ -46,6 +46,86 @@ class ArithOpsMixin:
         left, op, right = self._parse_expression(expr_tokens)
         dest_size = dest_info['size']
 
+        def _set_int64_const(value, pos):
+            byte_values = int(value).to_bytes(8, 'little', signed=True)
+            for i, byte_val in enumerate(byte_values):
+                self._generate_set_value(byte_val, pos=pos + i)
+
+        def _is_plain_literal(tok):
+            if tok.startswith('$'):
+                return False
+            if self._split_runtime_subscript_ref(tok) is not None:
+                return False
+            if tok in getattr(self, 'variables', {}):
+                return False
+            return True
+
+        def _is_literal_zero(tok):
+            if not _is_plain_literal(tok):
+                return False
+            try:
+                if any(c in tok for c in ('.', 'e', 'E')):
+                    return float(tok) == 0.0
+                return int(tok) == 0
+            except ValueError:
+                return False
+
+        def _sign_extend_8_to_16(pos):
+            flag = self._allocate_temp()
+            self._generate_clear(flag)
+            for v in range(128, 256):
+                self._generate_if_byte_equals(pos, v, lambda: self._generate_set_value(1, flag))
+
+            self._generate_clear(pos + 1)
+            self._generate_if_nonzero(flag, lambda: self._generate_set_value(255, pos + 1))
+            self._free_temp(flag)
+
+        def _load_operand_float_scaled(operand, target_pos):
+            opnd = operand[1:] if operand.startswith('$') else operand
+            runtime = self._split_runtime_subscript_ref(opnd)
+            if runtime is not None:
+                base_name, idx_var = runtime
+                base_info = self._resolve_var(base_name)
+                if base_info['type'] not in ('float', 'float64', 'expfloat') or base_info.get('elem_size', 8) != 8:
+                    raise NotImplementedError("Runtime-subscript float operands support only float/float64/expfloat")
+                self._load_runtime_subscript_into_buffer(base_info, idx_var, target_pos, 8)
+                return
+
+            if operand.startswith('$'):
+                info = self._resolve_var(operand)
+                if info['type'] in ('float', 'float64', 'expfloat'):
+                    self._copy_block(info['pos'], target_pos, 8)
+                    return
+
+                if info['type'] in ('int', 'int16', 'int64', 'byte', 'char'):
+                    temp_src_64 = self._allocate_temp(8)
+                    self._generate_clear_block(temp_src_64, 8)
+                    self._copy_block(info['pos'], temp_src_64, info['size'])
+
+                    if info['type'] == 'int16':
+                        self._sign_extend_16_to_64(temp_src_64)
+                    elif info['type'] in ('byte', 'char'):
+                        self._sign_extend_8_to_64(temp_src_64)
+
+                    const_1000 = self._allocate_temp(8)
+                    _set_int64_const(1000, const_1000)
+                    self._perform_mul_signed(temp_src_64, const_1000, target_pos, size=8)
+                    self._free_temp(const_1000)
+                    self._free_temp(temp_src_64)
+                    return
+
+                raise NotImplementedError(f"Unsupported source type for float conversion: {info['type']}")
+
+            if any(c in operand for c in ('.', 'e', 'E')):
+                if dest_info['type'] == 'expfloat':
+                    value = int(self._parse_expfloat_literal_scaled(operand))
+                else:
+                    value = int(self._parse_float_literal_scaled(operand))
+            else:
+                value = int(operand) * 1000
+
+            _set_int64_const(value, target_pos)
+
         if dest_info['type'] in ('float', 'float64', 'expfloat'):
             if op in ('&', '|', '^', '~', '%'):
                 raise NotImplementedError(f"{dest_info['type']} expressions do not support bitwise or modulo operators")
@@ -54,56 +134,6 @@ class ArithOpsMixin:
             temp_right = self._allocate_temp(8)
             self._generate_clear_block(temp_left, 8)
             self._generate_clear_block(temp_right, 8)
-
-            def _load_operand_float_scaled(operand, target_pos):
-                # Load into target_pos (8 bytes). Produces signed 64-bit scaled value.
-                opnd = operand[1:] if operand.startswith('$') else operand
-                runtime = self._split_runtime_subscript_ref(opnd)
-                if runtime is not None:
-                    base_name, idx_var = runtime
-                    base_info = self._resolve_var(base_name)
-                    if base_info['type'] not in ('float', 'float64', 'expfloat') or base_info.get('elem_size', 8) != 8:
-                        raise NotImplementedError("Runtime-subscript float operands support only float/float64/expfloat")
-                    self._load_runtime_subscript_into_buffer(base_info, idx_var, target_pos, 8)
-                    return
-
-                if operand.startswith('$'):
-                    info = self._resolve_var(operand)
-                    if info['type'] in ('float', 'float64', 'expfloat'):
-                        self._copy_block(info['pos'], target_pos, 8)
-                        return
-                    if info['type'] in ('int', 'int16', 'int64', 'byte', 'char'):
-                        # Scale up: result = var * 1000
-                        src_size = info['size']
-                        temp_src_64 = self._allocate_temp(8)
-                        self._generate_clear_block(temp_src_64, 8)
-                        self._copy_block(info['pos'], temp_src_64, src_size)
-                        if info['type'] == 'int16':
-                            self._sign_extend_16_to_64(temp_src_64)
-                        elif info['type'] in ('byte', 'char'):
-                            self._sign_extend_8_to_64(temp_src_64)
-                        
-                        const_1000 = self._allocate_temp(8)
-                        b1000 = int(1000).to_bytes(8, 'little', signed=True)
-                        for i, b in enumerate(b1000): self._generate_set_value(b, const_1000 + i)
-                        self._perform_mul_signed(temp_src_64, const_1000, target_pos, size=8)
-                        self._free_temp(const_1000)
-                        self._free_temp(temp_src_64)
-                        return
-                    raise NotImplementedError(f"Unsupported source type for float conversion: {info['type']}")
-
-                # literal
-                if any(c in operand for c in ('.', 'e', 'E')):
-                    if dest_info['type'] == 'expfloat':
-                        value = int(self._parse_expfloat_literal_scaled(operand))
-                    else:
-                        value = int(self._parse_float_literal_scaled(operand))
-                else:
-                    value = int(operand) * 1000
-                
-                byte_values = int(value).to_bytes(8, 'little', signed=True)
-                for i, byte_val in enumerate(byte_values):
-                    self._generate_set_value(byte_val, pos=target_pos + i)
 
             _load_operand_float_scaled(left, temp_left)
 
@@ -120,23 +150,19 @@ class ArithOpsMixin:
             elif op == '-':
                 self._perform_sub(temp_left, temp_right, dest_info['pos'], size=8)
             elif op == '*':
-                # res = (left * right) / 1000
                 raw_prod = self._allocate_temp(8)
                 self._perform_mul_signed(temp_left, temp_right, raw_prod, size=8)
                 const_1000 = self._allocate_temp(8)
-                b1000 = int(1000).to_bytes(8, 'little', signed=True)
-                for i, b in enumerate(b1000): self._generate_set_value(b, const_1000 + i)
+                _set_int64_const(1000, const_1000)
                 self._perform_div_signed(raw_prod, const_1000, dest_info['pos'], size=8)
                 self._free_temp(const_1000)
                 self._free_temp(raw_prod)
             elif op == '/':
                 # check for literal division by zero
-                if right.replace('.','').replace('-','').isdigit() and float(right) == 0:
+                if _is_literal_zero(right):
                     raise ValueError(f"Division by zero in {dest_info['type']} expression")
-                # res = (left * 1000) / right
                 const_1000 = self._allocate_temp(8)
-                b1000 = int(1000).to_bytes(8, 'little', signed=True)
-                for i, b in enumerate(b1000): self._generate_set_value(b, const_1000 + i)
+                _set_int64_const(1000, const_1000)
                 scaled_left = self._allocate_temp(8)
                 self._perform_mul_signed(temp_left, const_1000, scaled_left, size=8)
                 self._perform_div_signed(scaled_left, temp_right, dest_info['pos'], size=8)
@@ -152,7 +178,6 @@ class ArithOpsMixin:
             self._free_temp(temp_left)
             return
 
-        # Handle conversions for integer destinations
         if dest_info['type'] in ('int', 'int16', 'int64') and op is None and right is None:
             if not left.startswith('$'):
                 # literal assignment
@@ -166,10 +191,14 @@ class ArithOpsMixin:
             if src_info['type'] in ('float', 'float64', 'expfloat'):
                 # Float/Expfloat -> Int conversion (scale down by 1000)
                 const_1000 = self._allocate_temp(8)
-                b1000 = int(1000).to_bytes(8, 'little', signed=True)
-                for i, b in enumerate(b1000): self._generate_set_value(b, const_1000 + i)
-                
-                self._perform_div_signed(src_info['pos'], const_1000, dest_info['pos'], size=8)
+                _set_int64_const(1000, const_1000)
+
+                tmp_q = self._allocate_temp(8)
+                self._generate_clear_block(tmp_q, 8)
+                self._perform_div_signed(src_info['pos'], const_1000, tmp_q, size=8)
+                self._copy_block(tmp_q, dest_info['pos'], dest_size)
+
+                self._free_temp(tmp_q)
                 self._free_temp(const_1000)
                 return
 
@@ -180,10 +209,12 @@ class ArithOpsMixin:
             elif src_size < dest_size:
                 # Widen
                 self._copy_block(src_info['pos'], dest_info['pos'], src_size)
-                if src_info['type'] == 'int16':
+                if src_info['type'] == 'int16' and dest_size == 8:
                     self._sign_extend_16_to_64(dest_info['pos'])
-                elif src_info['type'] in ('byte', 'char'):
+                elif src_info['type'] in ('byte', 'char') and dest_size == 8:
                     self._sign_extend_8_to_64(dest_info['pos'])
+                elif src_info['type'] in ('byte', 'char') and dest_size == 2:
+                    _sign_extend_8_to_16(dest_info['pos'])
                 else:
                     for i in range(src_size, dest_size):
                         self._generate_clear(dest_info['pos'] + i)
@@ -199,7 +230,6 @@ class ArithOpsMixin:
             self._free_temp(temp_operand)
             return
 
-        # Binary operations for integers
         temp_left = self._allocate_temp(dest_size)
         temp_right = self._allocate_temp(dest_size)
 
@@ -306,11 +336,11 @@ class ArithOpsMixin:
                 is_255 = self._allocate_temp(1)
                 self._generate_clear(is_255)
                 self._generate_if_byte_equals(pos + i, 255, lambda: self._generate_set_value(1, is_255))
-                inv_255 = self._allocate_temp(1)
-                self._generate_set_value(1, inv_zero=inv_255)
-                self._generate_if_nonzero(is_255, lambda: self._generate_clear(inv_255))
-                self._generate_if_nonzero(inv_255, lambda: self._generate_clear(valid))
-                self._free_temp(inv_255)
+                not_255 = self._allocate_temp(1)
+                self._generate_set_value(1, not_255)
+                self._generate_if_nonzero(is_255, lambda: self._generate_clear(not_255))
+                self._generate_if_nonzero(not_255, lambda: self._generate_clear(valid))
+                self._free_temp(not_255)
                 self._free_temp(is_255)
 
         self._generate_if_nonzero(is_neg, _check_neg, body_fn_else=_check_pos)

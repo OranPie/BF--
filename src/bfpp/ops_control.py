@@ -631,36 +631,36 @@ class ControlFlowMixin:
                 self._copy_cell(pos_a + idx, byte_a, scr)
                 self._copy_cell(pos_b + idx, byte_b, scr)
                 self._free_temp(scr)
-                
-                # Unsigned byte comparison: while a > 0 and b > 0: a--, b--
-                self._move_pointer(byte_a)
-                self.bf_code.append('[')
+
+                # Unsigned byte comparison (terminating):
+                # while b > 0:
+                #   if a == 0: a < b (break)
+                #   else: a--, b--
                 self._move_pointer(byte_b)
                 self.bf_code.append('[')
-                self._move_pointer(byte_a)
-                self.bf_code.append('-')
+
+                def _a_nonzero_step():
+                    self._move_pointer(byte_a)
+                    self.bf_code.append('-')
+                    self._move_pointer(byte_b)
+                    self.bf_code.append('-')
+
+                def _a_zero_lt():
+                    self._generate_set_value(1, result_lt)
+                    self._generate_clear(result_eq)
+                    self._generate_set_value(1, stop)
+                    self._generate_clear(byte_b)
+
+                self._generate_if_nonzero(byte_a, _a_nonzero_step, body_fn_else=_a_zero_lt)
                 self._move_pointer(byte_b)
-                self.bf_code.append('-')
                 self.bf_code.append(']')
-                self.bf_code.append('[') # if b still > 0, clear both
-                self._generate_clear(byte_a)
-                self._generate_clear(byte_b)
-                self.bf_code.append(']')
-                self._move_pointer(byte_a)
-                self.bf_code.append(']')
-                
-                # If a > 0 => a > b
-                self._generate_if_nonzero(byte_a, lambda: (
+
+                # If still equal so far and a remaining > 0 => a > b
+                self._generate_if_nonzero(result_eq, lambda: self._generate_if_nonzero(byte_a, lambda: (
                     self._generate_set_value(1, result_gt),
                     self._generate_clear(result_eq),
                     self._generate_set_value(1, stop)
-                ))
-                # If b > 0 => a < b
-                self._generate_if_nonzero(byte_b, lambda: (
-                    self._generate_set_value(1, result_lt),
-                    self._generate_clear(result_eq),
-                    self._generate_set_value(1, stop)
-                ))
+                )))
                 
                 self._free_temp(byte_b)
                 self._free_temp(byte_a)
@@ -790,54 +790,86 @@ class ControlFlowMixin:
                 comp_size = var_size
 
             if op in ('==', '!=', '<', '>', '<=', '>='):
-                temp_a = self._allocate_temp(comp_size)
-                temp_b = self._allocate_temp(comp_size)
+                if (not rhs_is_var) and op in ('==', '!='):
+                    eq_flag = self._allocate_temp(1)
+                    self._generate_set_value(1, eq_flag)
 
-                self._copy_block(var_pos, temp_a, comp_size)
-
-                if rhs_is_var:
-                    self._copy_block(rhs_pos, temp_b, comp_size)
-                else:
                     byte_values = int(value).to_bytes(comp_size, 'little', signed=True)
                     for i, byte_val in enumerate(byte_values):
-                        self._generate_set_value(byte_val, pos=temp_b + i)
+                        is_match = self._allocate_temp(1)
+                        self._generate_clear(is_match)
+                        self._generate_if_byte_equals(var_pos + i, byte_val, lambda: self._generate_set_value(1, is_match))
 
-                is_lt = self._allocate_temp(1)
-                is_gt = self._allocate_temp(1)
-                is_eq = self._allocate_temp(1)
-                
-                self._compare_multi_byte_signed(temp_a, temp_b, comp_size, is_lt, is_gt, is_eq)
+                        inv_match = self._allocate_temp(1)
+                        self._generate_set_value(1, inv_match)
+                        self._generate_if_nonzero(is_match, lambda: self._generate_clear(inv_match))
+                        self._generate_if_nonzero(inv_match, lambda: self._generate_clear(eq_flag))
 
-                if op == '==':
-                    self._copy_cell(is_eq, flag_pos, self._allocate_temp(1))
-                    self._free_temp(self.current_ptr)
-                elif op == '!=':
-                    inv_eq = self._allocate_temp(1)
-                    self._generate_set_value(1, inv_eq)
-                    self._generate_if_nonzero(is_eq, lambda: self._generate_clear(inv_eq))
-                    self._copy_cell(inv_eq, flag_pos, self._allocate_temp(1))
-                    self._free_temp(self.current_ptr)
-                    self._free_temp(inv_eq)
-                elif op == '<':
-                    self._copy_cell(is_lt, flag_pos, self._allocate_temp(1))
-                    self._free_temp(self.current_ptr)
-                elif op == '>':
-                    self._copy_cell(is_gt, flag_pos, self._allocate_temp(1))
-                    self._free_temp(self.current_ptr)
-                elif op == '<=':
-                    self._copy_cell(is_lt, flag_pos, self._allocate_temp(1))
-                    self._free_temp(self.current_ptr)
-                    self._generate_if_nonzero(is_eq, lambda: self._generate_set_value(1, flag_pos))
-                elif op == '>=':
-                    self._copy_cell(is_gt, flag_pos, self._allocate_temp(1))
-                    self._free_temp(self.current_ptr)
-                    self._generate_if_nonzero(is_eq, lambda: self._generate_set_value(1, flag_pos))
+                        self._free_temp(inv_match)
+                        self._free_temp(is_match)
 
-                self._free_temp(is_eq)
-                self._free_temp(is_gt)
-                self._free_temp(is_lt)
-                self._free_temp(temp_b)
-                self._free_temp(temp_a)
+                    if op == '==':
+                        self._copy_cell(eq_flag, flag_pos, self._allocate_temp(1))
+                        self._free_temp(self.current_ptr)
+                    else:
+                        inv_eq = self._allocate_temp(1)
+                        self._generate_set_value(1, inv_eq)
+                        self._generate_if_nonzero(eq_flag, lambda: self._generate_clear(inv_eq))
+                        self._copy_cell(inv_eq, flag_pos, self._allocate_temp(1))
+                        self._free_temp(self.current_ptr)
+                        self._free_temp(inv_eq)
+
+                    self._free_temp(eq_flag)
+
+                else:
+                    temp_a = self._allocate_temp(comp_size)
+                    temp_b = self._allocate_temp(comp_size)
+
+                    self._copy_block(var_pos, temp_a, comp_size)
+
+                    if rhs_is_var:
+                        self._copy_block(rhs_pos, temp_b, comp_size)
+                    else:
+                        byte_values = int(value).to_bytes(comp_size, 'little', signed=True)
+                        for i, byte_val in enumerate(byte_values):
+                            self._generate_set_value(byte_val, pos=temp_b + i)
+
+                    is_lt = self._allocate_temp(1)
+                    is_gt = self._allocate_temp(1)
+                    is_eq = self._allocate_temp(1)
+                    
+                    self._compare_multi_byte_signed(temp_a, temp_b, comp_size, is_lt, is_gt, is_eq)
+
+                    if op == '==':
+                        self._copy_cell(is_eq, flag_pos, self._allocate_temp(1))
+                        self._free_temp(self.current_ptr)
+                    elif op == '!=':
+                        inv_eq = self._allocate_temp(1)
+                        self._generate_set_value(1, inv_eq)
+                        self._generate_if_nonzero(is_eq, lambda: self._generate_clear(inv_eq))
+                        self._copy_cell(inv_eq, flag_pos, self._allocate_temp(1))
+                        self._free_temp(self.current_ptr)
+                        self._free_temp(inv_eq)
+                    elif op == '<':
+                        self._copy_cell(is_lt, flag_pos, self._allocate_temp(1))
+                        self._free_temp(self.current_ptr)
+                    elif op == '>':
+                        self._copy_cell(is_gt, flag_pos, self._allocate_temp(1))
+                        self._free_temp(self.current_ptr)
+                    elif op == '<=':
+                        self._copy_cell(is_lt, flag_pos, self._allocate_temp(1))
+                        self._free_temp(self.current_ptr)
+                        self._generate_if_nonzero(is_eq, lambda: self._generate_set_value(1, flag_pos))
+                    elif op == '>=':
+                        self._copy_cell(is_gt, flag_pos, self._allocate_temp(1))
+                        self._free_temp(self.current_ptr)
+                        self._generate_if_nonzero(is_eq, lambda: self._generate_set_value(1, flag_pos))
+
+                    self._free_temp(is_eq)
+                    self._free_temp(is_gt)
+                    self._free_temp(is_lt)
+                    self._free_temp(temp_b)
+                    self._free_temp(temp_a)
             else:
                 raise NotImplementedError(f"Operator '{op}' not implemented")
 

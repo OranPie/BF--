@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import io
 import contextlib
+import signal
 
 def execute_bf_code(bf_code, input_data=""):
     """Execute BrainFuck code and return output."""
@@ -46,8 +47,17 @@ def execute_bf_code_inprocess(bf_code, input_data=""):
     old_stdin = sys.stdin
     try:
         sys.stdin = stdin
-        with contextlib.redirect_stdout(stdout):
-            execute_func(memory)
+        def _timeout_handler(signum, frame):
+            raise TimeoutError("BF execution timed out")
+
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(2)
+        try:
+            with contextlib.redirect_stdout(stdout):
+                execute_func(memory)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
     finally:
         sys.stdin = old_stdin
 

@@ -461,30 +461,29 @@ class ControlFlowMixin:
             else:
                 value = int(case_tokens[0])
 
+            # Fast path: bytewise equality against literal (avoids slow signed compare)
             self._generate_clear(flag_pos)
 
-            temp_a = self._allocate_temp(subj_size)
-            temp_b = self._allocate_temp(subj_size)
+            eq_flag = self._allocate_temp(1)
+            self._generate_set_value(1, eq_flag)
 
-            self._copy_block(subj_info['pos'], temp_a, subj_size)
             byte_values = int(value).to_bytes(subj_size, 'little', signed=True)
             for i, byte_val in enumerate(byte_values):
-                self._generate_set_value(byte_val, pos=temp_b + i)
+                is_match = self._allocate_temp(1)
+                self._generate_clear(is_match)
+                self._generate_if_byte_equals(subj_info['pos'] + i, byte_val, lambda: self._generate_set_value(1, is_match))
 
-            is_lt = self._allocate_temp(1)
-            is_gt = self._allocate_temp(1)
-            is_eq = self._allocate_temp(1)
-            
-            self._compare_multi_byte_signed(temp_a, temp_b, subj_size, is_lt, is_gt, is_eq)
-            
-            self._copy_cell(is_eq, flag_pos, self._allocate_temp(1))
+                inv_match = self._allocate_temp(1)
+                self._generate_set_value(1, inv_match)
+                self._generate_if_nonzero(is_match, lambda: self._generate_clear(inv_match))
+                self._generate_if_nonzero(inv_match, lambda: self._generate_clear(eq_flag))
+
+                self._free_temp(inv_match)
+                self._free_temp(is_match)
+
+            self._copy_cell(eq_flag, flag_pos, self._allocate_temp(1))
             self._free_temp(self.current_ptr)
-
-            self._free_temp(is_eq)
-            self._free_temp(is_gt)
-            self._free_temp(is_lt)
-            self._free_temp(temp_b)
-            self._free_temp(temp_a)
+            self._free_temp(eq_flag)
 
         def _match_case_equals_byte_literal(case_tokens, flag_pos):
             # Strict equality check between match subject (byte/char) and a numeric literal (0..255).

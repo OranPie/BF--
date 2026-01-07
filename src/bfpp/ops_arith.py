@@ -353,6 +353,7 @@ class ArithOpsMixin:
             loop = self._allocate_temp(1)
             self._generate_set_value(1, loop)
             self.bf_code.append('[#]') # Infinite loop marker
+            self._free_temp(loop)
             
         inv_valid = self._allocate_temp(1)
         self._generate_set_value(1, inv_valid)
@@ -536,6 +537,48 @@ class ArithOpsMixin:
             self._free_temp(self.current_ptr)
             
             self._free_temp(old_byte)
+            self._free_temp(carry_in)
+
+    def _shift_right_multi_byte(self, pos, size=8):
+        """Shift multi-byte integer right by 1 bit."""
+        # For each byte from LSB to MSB:
+        #   byte = (byte >> 1) | (next_byte_lsb << 7)
+        for i in range(size):
+            carry_in = self._allocate_temp(1)
+            self._generate_clear(carry_in)
+            if i < size - 1:
+                # bit 0 of pos[i+1]
+                bit0 = self._allocate_temp(1)
+                self._get_bit_multi_byte(pos, (i + 1) * 8, bit0, size=size)
+                self._generate_if_nonzero(bit0, lambda: self._generate_set_value(128, carry_in))
+                self._free_temp(bit0)
+            
+            # byte = (byte >> 1)
+            temp_byte = self._allocate_temp(1)
+            scr = self._allocate_temp(1)
+            self._copy_cell(pos + i, temp_byte, scr)
+            self._free_temp(scr)
+            
+            self._generate_clear(pos + i)
+            # Unsigned byte shift right: new = old // 2
+            # while temp_byte >= 2: temp_byte -= 2, pos[i] += 1
+            self._move_pointer(temp_byte)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._move_pointer(temp_byte)
+            self.bf_code.append('[')
+            self.bf_code.append('-')
+            self._move_pointer(pos + i)
+            self.bf_code.append('+')
+            self._move_pointer(temp_byte)
+            self.bf_code.append(']')
+            self.bf_code.append(']')
+            
+            # pos[i] |= carry_in
+            self._add_cell(carry_in, pos + i, self._allocate_temp(1))
+            self._free_temp(self.current_ptr)
+            
+            self._free_temp(temp_byte)
             self._free_temp(carry_in)
 
     def _get_bit_multi_byte(self, pos, bit_idx, result_pos, size=8):
@@ -1068,103 +1111,87 @@ class ArithOpsMixin:
 
     def _increment_multi_byte(self, pos, size=8):
         """Increment multi-byte integer with carry propagation."""
-        # Algorithm:
-        # for each byte:
-        #   byte++
-        #   if byte != 0: break
-        
-        # We use a temp flag to control the loop (break Simulation)
-        continue_flag = self._allocate_temp(1)
-        self._generate_set_value(1, continue_flag)
+        # More efficient implementation using a destructive check on a temporary copy
+        carry = self._allocate_temp(1)
+        self._generate_set_value(1, carry)
         
         for i in range(size):
-            # if continue_flag:
-            self._move_pointer(continue_flag)
-            self.bf_code.append('[')
-            self._generate_clear(continue_flag)
+            def _step(idx=i):
+                # byte++
+                self._move_pointer(pos + idx)
+                self.bf_code.append('+')
+                
+                # if byte != 0: carry = 0
+                # else: carry = 1 (remains 1)
+                is_nonzero = self._allocate_temp(1)
+                self._generate_clear(is_nonzero)
+                
+                temp = self._allocate_temp(1)
+                scr = self._allocate_temp(1)
+                self._copy_cell(pos + idx, temp, scr)
+                self._free_temp(scr)
+                
+                self._move_pointer(temp)
+                self.bf_code.append('[')
+                self._generate_set_value(1, is_nonzero)
+                self._generate_clear(temp)
+                self.bf_code.append(']')
+                self._free_temp(temp)
+                
+                # if is_nonzero: carry = 0
+                self._move_pointer(is_nonzero)
+                self.bf_code.append('[')
+                self._generate_clear(carry)
+                self._generate_clear(is_nonzero)
+                self.bf_code.append(']')
+                self._free_temp(is_nonzero)
+                
+            self._generate_if_nonzero(carry, _step)
             
-            # byte++
-            self._move_pointer(pos + i)
-            self.bf_code.append('+')
-            
-            # if byte != 0: stop (don't set continue_flag)
-            # if byte == 0: continue_flag = 1
-            is_zero = self._allocate_temp(1)
-            self._generate_set_value(1, is_zero)
-            temp = self._allocate_temp(1)
-            scr = self._allocate_temp(1)
-            self._copy_cell(pos + i, temp, scr)
-            self._generate_if_nonzero(temp, lambda: self._generate_clear(is_zero))
-            self._free_temp(scr)
-            self._free_temp(temp)
-            
-            self._generate_if_nonzero(is_zero, lambda: self._generate_set_value(1, continue_flag))
-            self._free_temp(is_zero)
-            
-            self._move_pointer(continue_flag)
-            self.bf_code.append(']')
-            
-        self._generate_clear(continue_flag)
-        self._free_temp(continue_flag)
+        self._generate_clear(carry)
+        self._free_temp(carry)
 
     def _decrement_multi_byte(self, pos, size=8):
         """Decrement multi-byte integer with borrow propagation."""
-        # Algorithm:
-        # for each byte:
-        #   if byte == 0: 
-        #     byte = 255
-        #     continue to next byte
-        #   else:
-        #     byte--
-        #     break
-        
-        continue_flag = self._allocate_temp(1)
-        self._generate_set_value(1, continue_flag)
+        borrow = self._allocate_temp(1)
+        self._generate_set_value(1, borrow)
         
         for i in range(size):
-            # if continue_flag:
-            self._move_pointer(continue_flag)
-            self.bf_code.append('[')
-            self._generate_clear(continue_flag)
-            
-            # if byte == 0:
-            is_zero = self._allocate_temp(1)
-            self._generate_set_value(1, is_zero)
-            temp = self._allocate_temp(1)
-            scr = self._allocate_temp(1)
-            self._copy_cell(pos + i, temp, scr)
-            self._generate_if_nonzero(temp, lambda: self._generate_clear(is_zero))
-            self._free_temp(scr)
-            self._free_temp(temp)
-            
-            def _handle_zero():
-                self._generate_set_value(255, pos + i)
-                self._generate_set_value(1, continue_flag)
+            def _step(idx=i):
+                # if byte == 0: byte = 255, borrow = 1
+                # else: byte--, borrow = 0
                 
-            def _handle_nonzero():
-                self._move_pointer(pos + i)
-                self.bf_code.append('-')
+                is_zero = self._allocate_temp(1)
+                self._generate_set_value(1, is_zero)
                 
-            self._generate_if_nonzero(is_zero, _handle_zero)
+                temp = self._allocate_temp(1)
+                scr = self._allocate_temp(1)
+                self._copy_cell(pos + idx, temp, scr)
+                self._free_temp(scr)
+                
+                self._move_pointer(temp)
+                self.bf_code.append('[')
+                self._generate_clear(is_zero)
+                self._generate_clear(temp)
+                self.bf_code.append(']')
+                self._free_temp(temp)
+                
+                def _on_zero():
+                    self._generate_set_value(255, pos + idx)
+                    # borrow remains 1
+                    
+                def _on_nonzero():
+                    self._move_pointer(pos + idx)
+                    self.bf_code.append('-')
+                    self._generate_clear(borrow)
+                    
+                self._generate_if_nonzero(is_zero, _on_zero, body_fn_else=_on_nonzero)
+                self._free_temp(is_zero)
+                
+            self._generate_if_nonzero(borrow, _step)
             
-            # if not is_zero:
-            inv_zero = self._allocate_temp(1)
-            self._generate_set_value(1, inv_zero)
-            self._move_pointer(is_zero)
-            self.bf_code.append('[')
-            self._generate_clear(inv_zero)
-            self._generate_clear(is_zero)
-            self.bf_code.append(']')
-            
-            self._generate_if_nonzero(inv_zero, _handle_nonzero)
-            self._free_temp(inv_zero)
-            self._free_temp(is_zero)
-            
-            self._move_pointer(continue_flag)
-            self.bf_code.append(']')
-            
-        self._generate_clear(continue_flag)
-        self._free_temp(continue_flag)
+        self._generate_clear(borrow)
+        self._free_temp(borrow)
 
     def _divmod10_multi_byte(self, pos_in, pos_quotient, rem_pos, size=8):
         """

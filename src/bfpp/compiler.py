@@ -440,17 +440,17 @@ class BrainFuckPlusPlusCompiler(
         """Perform subtraction (a - b) on multi-byte integers."""
         return super()._perform_sub(pos_a, pos_b, pos_result, size=size)
 
-    def _perform_mul(self, pos_a, pos_b, pos_result):
+    def _perform_mul(self, pos_a, pos_b, pos_result, size=8):
         """Perform multiplication using repeated addition (simplified)."""
-        return super()._perform_mul(pos_a, pos_b, pos_result)
+        return super()._perform_mul(pos_a, pos_b, pos_result, size=size)
 
-    def _perform_div(self, pos_a, pos_b, pos_result):
+    def _perform_div(self, pos_a, pos_b, pos_result, size=8):
         """Perform integer division using repeated subtraction."""
-        return super()._perform_div(pos_a, pos_b, pos_result)
+        return super()._perform_div(pos_a, pos_b, pos_result, size=size)
 
-    def _perform_mod(self, pos_a, pos_b, pos_result):
+    def _perform_mod(self, pos_a, pos_b, pos_result, size=8):
         """Perform modulo operation using repeated subtraction."""
-        return super()._perform_mod(pos_a, pos_b, pos_result)
+        return super()._perform_mod(pos_a, pos_b, pos_result, size=size)
 
     def _bitwise_byte_operation(self, op, pos_a, pos_b, pos_result):
         """

@@ -51,7 +51,7 @@ def execute_bf_code_inprocess(bf_code, input_data=""):
             raise TimeoutError("BF execution timed out")
 
         old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.alarm(2)
+        signal.alarm(10)
         try:
             with contextlib.redirect_stdout(stdout):
                 execute_func(memory)

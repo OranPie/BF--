@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .compiler import BrainFuckPlusPlusCompiler
+from .core.compiler import BrainFuckPlusPlusCompiler
 
 
 @dataclass(frozen=True)

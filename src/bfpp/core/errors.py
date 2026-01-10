@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 
@@ -58,22 +58,33 @@ def _compile_error_prefix(kind: str) -> str:
 @dataclass
 class BFPPError(Exception):
     message: str
+    trace: Optional[List[str]] = field(default=None)
+    metadata: Optional[dict] = field(default=None)
 
     def __str__(self) -> str:
-        return self.message
+        res = [self.message]
+        if self.metadata:
+            res.append("\nMetadata:")
+            for k, v in self.metadata.items():
+                res.append(f"  {k}: {v}")
+        if self.trace:
+            res.append("\nCompilation Trace (last 10 steps):")
+            for step in self.trace[-10:]:
+                res.append(f"  - {step}")
+        return "\n".join(res)
 
 
 @dataclass
 class BFPPPreprocessError(BFPPError):
-    line: int
-    context: str
+    line: int = 0
+    context: str = ""
 
 
 @dataclass
 class BFPPCompileError(BFPPError):
-    kind: str
-    line: int
-    context: str
+    kind: str = "compile"
+    line: int = 0
+    context: str = ""
 
 
 def make_preprocess_error(*, message: str, source: str, line: int) -> BFPPPreprocessError:
@@ -88,7 +99,7 @@ def make_preprocess_error(*, message: str, source: str, line: int) -> BFPPPrepro
     )
 
 
-def make_compile_error(*, message: str, source: str, line: int, kind: str = 'compile') -> BFPPCompileError:
+def make_compile_error(*, message: str, source: str, line: int, kind: str = 'compile', trace: Optional[List[str]] = None, metadata: Optional[dict] = None) -> BFPPCompileError:
     lines = source.split('\n')
     ctx = _build_context(lines, line)
     hint = _hint_for(message, kind=kind)
@@ -99,4 +110,6 @@ def make_compile_error(*, message: str, source: str, line: int, kind: str = 'com
         kind=kind,
         line=line,
         context=ctx,
+        trace=trace,
+        metadata=metadata,
     )

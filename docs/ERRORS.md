@@ -43,9 +43,27 @@ CompileError: ValueError: Unknown variable: a (line 2)
 Hint: Declare the variable first (declare byte/char/int/string...) and check spelling.
 ```
 
-## Semicolon-separated statements
+## Deep Trace and Debugging
 
-A single line may contain multiple statements separated by `;`.
+The compiler supports an opt-in **Trace Mode** for deep debugging.
 
-- Splitting happens only at top-level (not inside parentheses).
-- This is designed so `for (init; cond; step)` keeps working.
+- Enable by passing `is_tracing=True` to `BrainFuckPlusPlusCompiler.compile()`.
+- When tracing is active, `BFPPCompileError` will include a **Compilation Trace** of the last 10 processed statements.
+- Trace output includes the line number and original source tokens for each step.
+
+Example with trace:
+```python
+compiler = BrainFuckPlusPlusCompiler()
+try:
+    bf = compiler.compile(code, is_tracing=True)
+except BFPPCompileError as e:
+    print(e)
+```
+
+## Structured Metadata
+
+Errors now include a `metadata` dictionary with the compiler's internal state at the time of failure:
+- `ptr`: Current Brainfuck tape pointer position.
+- `max_ptr`: Highest memory address allocated.
+- `temp_cells_count`: Number of active temporary cells.
+- `vars_count`: Total number of declared variables.

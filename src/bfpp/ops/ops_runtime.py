@@ -2,41 +2,55 @@ from __future__ import annotations
 
 
 class RuntimeOpsMixin:
-    def _generate_if_byte_equals(self, byte_pos, const_value, body_fn):
-        # Executes body_fn() if *byte_pos == const_value (0..255). Does not consume byte.
-        temp_a = self._allocate_temp()
-        temp_b = self._allocate_temp()
-        temp_scratch = self._allocate_temp()
-        is_equal = self._allocate_temp()
+    def _generate_if_byte_equals(self, byte_pos, const_value, body_fn, body_fn_else=None):
+        """Executes body_fn() if *byte_pos == const_value (non-destructive)."""
+        # If no else branch and it's a common constant, use optimized versions
+        if body_fn_else is None:
+            if const_value == 0:
+                self._generate_if_nonzero(byte_pos, lambda: None, body_fn_else=body_fn)
+                return
+            if const_value == 255:
+                temp, scr = self._allocate_temp(1), self._allocate_temp(1)
+                self._copy_cell(byte_pos, temp, scr)
+                self._move_pointer(temp)
+                self.bf_code.append('+')
+                self._generate_if_nonzero(temp, lambda: None, body_fn_else=body_fn)
+                self._free_temp(scr)
+                self._free_temp(temp)
+                return
 
+        # General case (with else branch or complex constant)
+        is_equal = self._allocate_temp(1)
+        self._generate_clear(is_equal)
+        
+        temp_a = self._allocate_temp(1)
+        temp_b = self._allocate_temp(1)
+        temp_scratch = self._allocate_temp(1)
+        
         self._generate_clear(temp_scratch)
         self._copy_cell(byte_pos, temp_a, temp_scratch)
         self._generate_set_value(const_value, temp_b)
-
+        
         self._move_pointer(temp_b)
         self.bf_code.append('[')
         self._move_pointer(temp_a)
         self.bf_code.append('-')
         self._move_pointer(temp_b)
         self.bf_code.append('-]')
-
+        
         self._generate_set_value(1, is_equal)
         self._move_pointer(temp_a)
         self.bf_code.append('[')
         self._generate_clear(is_equal)
         self._generate_clear(temp_a)
         self.bf_code.append(']')
-
-        self._move_pointer(is_equal)
-        self.bf_code.append('[')
-        body_fn()
-        self._move_pointer(is_equal)
-        self.bf_code.append('-]')
-
-        self._free_temp(is_equal)
+        
+        self._generate_if_nonzero(is_equal, body_fn, body_fn_else=body_fn_else)
+        
         self._free_temp(temp_scratch)
         self._free_temp(temp_b)
         self._free_temp(temp_a)
+        self._free_temp(is_equal)
 
     def _generate_if_nonzero(self, pos, body_fn, body_fn_else=None):
         # Executes body_fn() if *pos != 0 (non-destructive).

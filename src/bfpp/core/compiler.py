@@ -1,14 +1,14 @@
 import re
 
-from bfpp.lexer import preprocess, tokenize
-from bfpp.errors import BFPPCompileError, BFPPPreprocessError, make_compile_error
-from bfpp.state import CompilerState
-from bfpp.ops_memory import MemoryOpsMixin
-from bfpp.ops_runtime import RuntimeOpsMixin
-from bfpp.ops_vars import VarsOpsMixin
-from bfpp.ops_arith import ArithOpsMixin
-from bfpp.ops_io import IOMixin
-from bfpp.ops_control import ControlFlowMixin
+from bfpp.core.lexer import preprocess, tokenize
+from bfpp.core.errors import BFPPCompileError, BFPPPreprocessError, make_compile_error
+from bfpp.core.state import CompilerState
+from bfpp.ops.ops_memory import MemoryOpsMixin
+from bfpp.ops.ops_runtime import RuntimeOpsMixin
+from bfpp.ops.ops_vars import VarsOpsMixin
+from bfpp.ops.ops_arith import ArithOpsMixin
+from bfpp.ops.ops_io import IOMixin
+from bfpp.ops.ops_control import ControlFlowMixin
 
 
 class BrainFuckPlusPlusCompiler(
@@ -96,7 +96,7 @@ class BrainFuckPlusPlusCompiler(
 
     # ===== Main Compilation Pipeline =====
 
-    def compile(self, code, optimize_level=None):
+    def compile(self, code, optimize_level=None, is_tracing=False):
         """
         Main compilation method.
 
@@ -107,18 +107,35 @@ class BrainFuckPlusPlusCompiler(
 
         Args:
             code: BF++ source code string
+            optimize_level: Optional optimization level
+            is_tracing: Whether to enable compilation tracing
 
         Returns:
             Generated BrainFuck code string
         """
+        self.state.is_tracing = is_tracing
         try:
             code = self._preprocess(code)
         except BFPPPreprocessError:
             raise
         lines = code.split('\n')
 
+        # First pass: collect macro definitions
+        self._collect_macros(lines)
+
+        # Generate dispatcher loop if macros exist
+        if self.state.macros:
+            self._generate_macro_dispatcher_preamble()
+
         i = 0
         while i < len(lines):
+            # Skip macro definition blocks during main compilation
+            if lines[i].strip().startswith('#macro'):
+                while i < len(lines) and not lines[i].strip().startswith('#endmacro'):
+                    i += 1
+                i += 1
+                continue
+            
             self._last_line = i + 1
             try:
                 line = lines[i].strip()
@@ -128,6 +145,7 @@ class BrainFuckPlusPlusCompiler(
 
                 tokens = self._tokenize(line)
                 if tokens:
+                    self.state.add_trace(f"Line {self._last_line}: {' '.join(tokens)}")
                     i = self._process_statement(tokens, lines, i)
                 i += 1
             except BFPPCompileError:
@@ -145,9 +163,89 @@ class BrainFuckPlusPlusCompiler(
             bf = optimize_bf(bf, level=int(level), cell_size=256, wrap=True)
         return bf
 
-    def _preprocess(self, code):
-        """Remove single-line and multi-line comments from source code."""
-        return preprocess(code)
+    def _collect_macros(self, lines: List[str]):
+        """First pass to collect #macro definitions."""
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.startswith('#macro'):
+                tokens = self._tokenize(line)
+                if len(tokens) < 2:
+                    raise ValueError("Invalid #macro definition: #macro <name>")
+                macro_name = tokens[1]
+                body = []
+                i += 1
+                while i < len(lines):
+                    if lines[i].strip().startswith('#endmacro'):
+                        break
+                    body.append(lines[i])
+                    i += 1
+                self.state.macros[macro_name] = {
+                    'body': body,
+                    'id': len(self.state.macros) + 1
+                }
+            i += 1
+
+    def _generate_macro_dispatcher_preamble(self):
+        """Generate the main loop that dispatches to macros based on a control variable."""
+        # Allocate global control variables for the macro system
+        # macro_id: which macro to run (0 = none/main)
+        # call_site_id: which call site to return to
+        self.state.variables['__macro_id'] = {
+            'pos': self.max_ptr,
+            'type': 'byte',
+            'size': 1,
+            'is_array': False
+        }
+        self.max_ptr += 1
+        
+        self.state.variables['__call_site_id'] = {
+            'pos': self.max_ptr,
+            'type': 'byte',
+            'size': 1,
+            'is_array': False
+        }
+        self.max_ptr += 1
+
+        macro_id_pos = self.state.variables['__macro_id']['pos']
+        
+        # We wrap the entire program in a loop that checks __macro_id
+        # If __macro_id > 0, it jumps to the dispatcher
+        # This preamble only sets up the "main" entry
+        self._move_pointer(macro_id_pos)
+        self.bf_code.append('[') # Main macro loop
+
+    def _generate_macro_dispatcher_body(self):
+        """Generates the actual dispatcher logic at the end of the program."""
+        macro_id_pos = self.state.variables['__macro_id']['pos']
+        call_site_id_pos = self.state.variables['__call_site_id']['pos']
+        
+        # The dispatcher is a nested if-else chain checking __macro_id
+        for name, info in self.state.macros.items():
+            def _run_macro(m_name=name, m_info=info):
+                # Process macro body
+                self._process_lines_range(m_info['body'], 0, len(m_info['body']) - 1)
+                
+                # After body, handle return
+                # Clear macro_id so we don't re-run this macro immediately
+                self._generate_clear(macro_id_pos)
+                
+                # Return dispatcher: based on call_site_id, we set macro_id for the next step?
+                # No, we just need to return to the call site.
+                # In BF, "returning" means finishing the dispatcher loop iteration
+                # and letting the main code continue.
+                # But wait, if we want real functions, the "main" code must also be a macro
+                # or we use a more complex jump.
+                
+                # Simplified: macros are called from main. 
+                # After macro finishes, it clears macro_id. 
+                # The main loop iteration ends, it checks macro_id (now 0), and continues main.
+                pass
+
+            self._generate_if_byte_equals(macro_id_pos, info['id'], _run_macro)
+
+        self._move_pointer(macro_id_pos)
+        self.bf_code.append(']') # End main macro loop
 
     def _raise_compile_error(self, e: Exception, lines):
         line_no = getattr(self, '_last_line', 1)
@@ -160,7 +258,22 @@ class BrainFuckPlusPlusCompiler(
             kind = 'type'
         elif isinstance(e, RuntimeError):
             kind = 'runtime'
-        raise make_compile_error(message=f"{type(e).__name__}: {e}", source='\n'.join(lines), line=line_no, kind=kind) from e
+        
+        metadata = {
+            'ptr': self.current_ptr,
+            'max_ptr': self.max_ptr,
+            'temp_cells_count': len(self.temp_cells),
+            'vars_count': len(self.variables)
+        }
+        
+        raise make_compile_error(
+            message=f"{type(e).__name__}: {e}", 
+            source='\n'.join(lines), 
+            line=line_no, 
+            kind=kind,
+            trace=self.state.trace if self.state.is_tracing else None,
+            metadata=metadata
+        ) from e
 
     def _tokenize(self, line):
         """
@@ -440,9 +553,9 @@ class BrainFuckPlusPlusCompiler(
         """Perform subtraction (a - b) on multi-byte integers."""
         return super()._perform_sub(pos_a, pos_b, pos_result, size=size)
 
-    def _perform_mul(self, pos_a, pos_b, pos_result, size=8):
-        """Perform multiplication using repeated addition (simplified)."""
-        return super()._perform_mul(pos_a, pos_b, pos_result, size=size)
+    def _perform_mul(self, pos_a, pos_b, pos_result, size=8, result_size=None):
+        """Perform multiplication on multi-byte integers."""
+        return super()._perform_mul(pos_a, pos_b, pos_result, size=size, result_size=result_size)
 
     def _perform_div(self, pos_a, pos_b, pos_result, size=8):
         """Perform integer division using repeated subtraction."""

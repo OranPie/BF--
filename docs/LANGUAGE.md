@@ -123,9 +123,19 @@ Rules:
 - `byte` / `char`
   - Size: 1 cell
   - Used for small integers (0..255) and character output.
-- `int`
+- `int16`
+  - Size: 2 cells
+  - 16-bit little-endian, signed.
+- `int` / `int64`
   - Size: 8 cells
-  - 64-bit **little-endian**, signed.
+  - 64-bit little-endian, signed.
+- `float` / `float64`
+  - Size: 8 cells
+  - Fixed-point 64-bit, scaled by **1000** (3 decimal places).
+  - Used for basic decimal arithmetic (+, -, *, /).
+- `expfloat`
+  - Size: 8 cells
+  - Experimental fixed-point 64-bit, scaled by **10^6** for higher precision.
 - `string <N>`
   - Stored as `N + 1` cells (null-terminated)
   - Example: `declare string 20 msg` allocates 21 cells.
@@ -264,6 +274,7 @@ Keys can be identifiers or string literals. Commas are optional separators.
 ### 6.2 Assignment
 
 - `set <number> on <varRef>`
+- `set <float> on <varRef>` (e.g. `set 1.250 on x`)
 - `set - <number> on <varRef>` (negative literal tokenized as `-` + number)
 - `set "<string>" on <varRef>`
 
@@ -329,12 +340,12 @@ Behavior by type:
 - `byte`/`char`:
   - scalar: prints one character
   - collection: prints each element as a character
-- `int`:
-  - scalar: prints decimal (see implementation notes/limitations)
+- `int`/`int16`/`int64`:
+  - scalar: prints decimal representation
   - collection: prints each element; default `sep` is a space (`32`) if none is provided
-- `string`:
-  - scalar: prints bytes until `\0` (null terminator), bounded by declared size
-  - collection: prints each string element similarly
+- `float`/`float64`/`expfloat`:
+  - scalar: prints as decimal (e.g., `1.250`)
+  - collection: prints each element with `sep`
 
 `sep` / `end` tokens can be:
 

@@ -40,6 +40,8 @@ class MemoryOpsMixin:
             self.bf_code.append('+' * value)
 
     def _copy_cell(self, src_pos, dest_pos, temp_pos):
+        if src_pos == dest_pos:
+            return
         self._move_pointer(dest_pos)
         self._generate_clear()
 
@@ -63,10 +65,25 @@ class MemoryOpsMixin:
         self.bf_code.append('-]')
 
     def _add_cell(self, src_pos, dest_pos, temp_pos):
-        # dest += src (byte), preserving src. temp_pos is clobbered.
-        self._move_pointer(temp_pos)
-        self._generate_clear()
+        """dest += src (byte), preserving src. temp_pos is clobbered."""
+        if src_pos == dest_pos:
+            # dest *= 2
+            self._generate_clear(temp_pos)
+            self._move_pointer(src_pos)
+            self.bf_code.append('[')
+            self._move_pointer(temp_pos)
+            self.bf_code.append('+')
+            self._move_pointer(src_pos)
+            self.bf_code.append('-]')
+            self._move_pointer(temp_pos)
+            self.bf_code.append('[')
+            self._move_pointer(dest_pos)
+            self.bf_code.append('++')
+            self._move_pointer(temp_pos)
+            self.bf_code.append('-]')
+            return
 
+        self._generate_clear(temp_pos)
         self._move_pointer(src_pos)
         self.bf_code.append('[')
         self._move_pointer(dest_pos)
@@ -76,6 +93,32 @@ class MemoryOpsMixin:
         self._move_pointer(src_pos)
         self.bf_code.append('-]')
 
+        # restore src from temp_pos
+        self._move_pointer(temp_pos)
+        self.bf_code.append('[')
+        self._move_pointer(src_pos)
+        self.bf_code.append('+')
+        self._move_pointer(temp_pos)
+        self.bf_code.append('-]')
+
+    def _sub_cell(self, src_pos, dest_pos, temp_pos):
+        """dest -= src (byte), preserving src. temp_pos is clobbered."""
+        if src_pos == dest_pos:
+            # dest = 0
+            self._generate_clear(dest_pos)
+            return
+
+        self._generate_clear(temp_pos)
+        self._move_pointer(src_pos)
+        self.bf_code.append('[')
+        self._move_pointer(dest_pos)
+        self.bf_code.append('-')
+        self._move_pointer(temp_pos)
+        self.bf_code.append('+')
+        self._move_pointer(src_pos)
+        self.bf_code.append('-]')
+
+        # restore src from temp_pos
         self._move_pointer(temp_pos)
         self.bf_code.append('[')
         self._move_pointer(src_pos)
@@ -84,7 +127,8 @@ class MemoryOpsMixin:
         self.bf_code.append('-]')
 
     def _copy_block(self, src_pos, dest_pos, size):
-        temp_block = self._allocate_temp(size)
+        # Use a single temporary for all byte copies to save memory and ensure LIFO
+        scratch = self._allocate_temp(1)
         for i in range(size):
-            self._copy_cell(src_pos + i, dest_pos + i, temp_block + i)
-        self._free_temp(temp_block)
+            self._copy_cell(src_pos + i, dest_pos + i, scratch)
+        self._free_temp(scratch)
